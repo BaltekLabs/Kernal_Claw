@@ -1,6 +1,12 @@
-# Core UI
-pygame
+# Web server (replaces Pygame for Android launcher mode)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0
+
+# System info
 psutil
+
+# Async HTTP (Ollama + HTTP tool)
 aiohttp
 
 # YAML (skills/config/memory)
@@ -10,3 +16,6 @@ PyYAML
 # Ollama is local — no package required (uses aiohttp above)
 # openai>=1.0.0          # for OpenAI + Groq (OpenAI-compatible)
 # anthropic>=0.20.0      # for Anthropic Claude
+
+# Legacy desktop UI (not needed for Android launcher)
+# pygame

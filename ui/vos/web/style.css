@@ -1,0 +1,376 @@
+/* VoiceOS Launcher — mobile-first stylesheet */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:root {
+  --accent: #0096ff;
+  --bg: #000;
+  --panel-bg: rgba(10, 20, 40, 0.92);
+  --text: #fff;
+  --text-dim: rgba(255,255,255,0.55);
+  --radius: 16px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  user-select: none;
+  touch-action: none; /* gestures handled by JS */
+}
+
+/* ── Canvas ───────────────────────────────────────────────────── */
+#canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ── Status label (provider/model) ─────────────────────────────── */
+#status-bar {
+  position: fixed;
+  top: calc(var(--safe-top) + 12px);
+  left: 0; right: 0;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+/* ── Hint label (swipe instructions) ─────────────────────────── */
+#hint {
+  position: fixed;
+  bottom: calc(var(--safe-bottom) + 20px);
+  left: 0; right: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  pointer-events: none;
+  transition: opacity 0.4s;
+}
+
+/* ── Response / chat panel ───────────────────────────────────── */
+#response-panel {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: 0;
+  max-height: 55vh;
+  background: var(--panel-bg);
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 16px 20px calc(var(--safe-bottom) + 16px);
+  transform: translateY(100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#response-panel.visible {
+  transform: translateY(0);
+}
+
+#response-handle {
+  width: 40px; height: 4px;
+  background: rgba(255,255,255,0.25);
+  border-radius: 2px;
+  margin: 0 auto 8px;
+  flex-shrink: 0;
+}
+
+#response-scroll {
+  overflow-y: auto;
+  flex: 1;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+#response-text {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* skill / tool badges */
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 100px;
+  background: rgba(0, 150, 255, 0.2);
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+/* ── Input panel ─────────────────────────────────────────────── */
+#input-panel {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: 0;
+  background: var(--panel-bg);
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 16px 16px calc(var(--safe-bottom) + 16px);
+  transform: translateY(100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#input-panel.visible {
+  transform: translateY(0);
+}
+
+#input-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+#chat-input {
+  flex: 1;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 22px;
+  padding: 12px 16px;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.4;
+  resize: none;
+  outline: none;
+  max-height: 120px;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+#chat-input::placeholder { color: var(--text-dim); }
+
+#send-btn {
+  width: 46px; height: 46px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+#send-btn:active { opacity: 0.7; }
+
+/* ── Settings panel (swipe down) ─────────────────────────────── */
+#settings-panel {
+  position: fixed;
+  left: 0; right: 0;
+  top: 0;
+  background: var(--panel-bg);
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: calc(var(--safe-top) + 16px) 20px 24px;
+  transform: translateY(-100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#settings-panel.visible {
+  transform: translateY(0);
+}
+
+#settings-panel h2 {
+  font-size: 14px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.provider-btn {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.provider-btn:active { background: rgba(0,150,255,0.25); }
+.provider-btn.active  { border-color: var(--accent); color: var(--accent); }
+
+.provider-btn small {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+#clear-btn {
+  margin-top: 16px;
+  width: 100%;
+  background: rgba(220,40,40,0.15);
+  border: 1px solid rgba(220,40,40,0.3);
+  border-radius: 12px;
+  padding: 12px;
+  color: #f66;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* ── App drawer (swipe up from home) ─────────────────────────── */
+#app-drawer {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transform: translateY(100%);
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--safe-top) + 60px) 16px calc(var(--safe-bottom) + 24px);
+}
+
+#app-drawer.visible { transform: translateY(0); }
+
+#drawer-search {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 22px;
+  padding: 12px 18px;
+  color: var(--text);
+  font-size: 16px;
+  outline: none;
+  margin-bottom: 20px;
+  touch-action: pan-y;
+}
+#drawer-search::placeholder { color: var(--text-dim); }
+
+#app-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px 8px;
+  overflow-y: auto;
+  flex: 1;
+  align-content: start;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.app-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 8px 4px;
+  border-radius: 12px;
+  transition: background 0.15s;
+}
+.app-icon:active { background: rgba(255,255,255,0.1); }
+
+.app-icon-img {
+  width: 56px; height: 56px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.08);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px;
+  overflow: hidden;
+}
+.app-icon-img img { width: 100%; height: 100%; object-fit: cover; }
+
+.app-icon-label {
+  font-size: 11px;
+  text-align: center;
+  color: var(--text);
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Processing indicator overlay ───────────────────────────── */
+#processing-label {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, calc(-50% + 140px));
+  font-size: 13px;
+  color: var(--text-dim);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#processing-label.visible { opacity: 1; }
+
+/* ── History panel (swipe right) ────────────────────────────── */
+#history-panel {
+  position: fixed;
+  top: 0; bottom: 0; left: 0;
+  width: min(320px, 85vw);
+  background: var(--panel-bg);
+  padding: calc(var(--safe-top) + 24px) 0 calc(var(--safe-bottom) + 16px);
+  transform: translateX(-100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+}
+#history-panel.visible { transform: translateX(0); }
+
+#history-panel h2 {
+  font-size: 14px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding: 0 20px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+#history-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 12px 0;
+  touch-action: pan-y;
+}
+
+.history-item {
+  padding: 12px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  cursor: pointer;
+}
+.history-item:active { background: rgba(255,255,255,0.05); }
+.history-item .hi-q {
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-item .hi-a {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 3px;
+}

@@ -7,23 +7,36 @@ arch="all"
 license="MIT"
 depends="openrc busybox"
 install="$pkgname.post-install $pkgname.post-deinstall"
+# Local files are copied flat into $srcdir by abuild (directory prefix stripped)
+source="
+  files/99-baltek-dte.conf
+  files/baltek-bootmenu-install
+  files/baltek-mode-run
+  files/baltek-vm-run
+  files/baltek-mode.initd
+  files/baltek-vm.initd
+  files/dte.conf
+  files/vm.conf
+"
+# Run 'abuild checksum' after any file change to regenerate
+sha512sums="SKIP"
 
 build() { :; }
 
 package() {
   install -d "$pkgdir/etc/baltek"
-  install -m 0644 "$srcdir/files/dte.conf" "$pkgdir/etc/baltek/dte.conf"
-  install -m 0644 "$srcdir/files/vm.conf"  "$pkgdir/etc/baltek/vm.conf"
+  install -m 0644 "$srcdir/dte.conf" "$pkgdir/etc/baltek/dte.conf"
+  install -m 0644 "$srcdir/vm.conf"  "$pkgdir/etc/baltek/vm.conf"
 
   install -d "$pkgdir/etc/init.d"
-  install -m 0755 "$srcdir/files/baltek-mode.initd" "$pkgdir/etc/init.d/baltek-mode"
-  install -m 0755 "$srcdir/files/baltek-vm.initd"   "$pkgdir/etc/init.d/baltek-vm"
+  install -m 0755 "$srcdir/baltek-mode.initd" "$pkgdir/etc/init.d/baltek-mode"
+  install -m 0755 "$srcdir/baltek-vm.initd"   "$pkgdir/etc/init.d/baltek-vm"
 
   install -d "$pkgdir/usr/local/sbin"
-  install -m 0755 "$srcdir/files/baltek-mode-run"         "$pkgdir/usr/local/sbin/baltek-mode-run"
-  install -m 0755 "$srcdir/files/baltek-vm-run"           "$pkgdir/usr/local/sbin/baltek-vm-run"
-  install -m 0755 "$srcdir/files/baltek-bootmenu-install" "$pkgdir/usr/local/sbin/baltek-bootmenu-install"
+  install -m 0755 "$srcdir/baltek-mode-run"         "$pkgdir/usr/local/sbin/baltek-mode-run"
+  install -m 0755 "$srcdir/baltek-vm-run"           "$pkgdir/usr/local/sbin/baltek-vm-run"
+  install -m 0755 "$srcdir/baltek-bootmenu-install" "$pkgdir/usr/local/sbin/baltek-bootmenu-install"
 
   install -d "$pkgdir/etc/sysctl.d"
-  install -m 0644 "$srcdir/files/99-baltek-dte.conf" "$pkgdir/etc/sysctl.d/99-baltek-dte.conf"
+  install -m 0644 "$srcdir/99-baltek-dte.conf" "$pkgdir/etc/sysctl.d/99-baltek-dte.conf"
 }

@@ -1,4 +1,3 @@
-# Maintainer: BaltekLabs <balteklabssc@gmail.com>
 pkgname=baltek-vos-ui
 pkgver=0.1.0
 pkgrel=0
@@ -19,37 +18,71 @@ depends="
   mesa-dri-gallium
   libseat
   xdg-user-dirs
+  git
 "
 install="$pkgname.post-install $pkgname.post-deinstall"
-source=""
-builddir="$srcdir"
+
+# Installer scripts (local files, copied flat into $srcdir by abuild)
+source="
+  files/baltek-vos-launch
+  files/baltek-vos-ui.initd
+  files/baltek-vos-app
+  files/hyprland-vos.conf
+"
+sha512sums="SKIP"
+
+# The VoiceOS source is fetched via sparse git clone so we only pull
+# ui/vos/ from the repo instead of the entire kernel tree (~1 GB).
+_gitrepo="https://github.com/BaltekLabs/linux.git"
+_gittag="v${pkgver}"
+
+# Override abuild's standard fetch to do a sparse clone.
+# Only ui/vos/ is checked out; nothing else from the kernel tree is downloaded.
+fetch() {
+  local dest="$srcdir/linux"
+
+  if [ ! -d "$dest/.git" ]; then
+    msg "Sparse-cloning $_gitrepo (tag: $_gittag, path: ui/vos)"
+    git clone \
+      --filter=blob:none \
+      --no-checkout \
+      --depth=1 \
+      --branch "$_gittag" \
+      "$_gitrepo" \
+      "$dest"
+  fi
+
+  cd "$dest"
+  git sparse-checkout init --cone
+  git sparse-checkout set ui/vos
+  git checkout "$_gittag"
+}
+
+builddir="$srcdir/linux/ui/vos"
 
 build() { :; }
 
 package() {
-  # Install the VoiceOS source tree
+  # VoiceOS Python source → /opt/baltek/vos/
   install -d "$pkgdir/opt/baltek/vos"
-  cp -r "$builddir"/../../../../../ui/vos/src/. "$pkgdir/opt/baltek/vos/"
-
-  # Install requirements
-  install -m 0644 "$builddir"/../../../../../ui/vos/requirements.txt \
+  cp -r "$builddir/src/." "$pkgdir/opt/baltek/vos/"
+  install -m 0644 "$builddir/requirements.txt" \
     "$pkgdir/opt/baltek/vos/requirements.txt"
 
-  # Install launcher script
+  # Launcher scripts → /usr/local/sbin/
   install -d "$pkgdir/usr/local/sbin"
-  install -m 0755 "$srcdir/files/baltek-vos-launch" \
+  install -m 0755 "$srcdir/baltek-vos-launch" \
     "$pkgdir/usr/local/sbin/baltek-vos-launch"
+  install -m 0755 "$srcdir/baltek-vos-app" \
+    "$pkgdir/usr/local/sbin/baltek-vos-app"
 
-  # Install OpenRC service
+  # OpenRC service
   install -d "$pkgdir/etc/init.d"
-  install -m 0755 "$srcdir/files/baltek-vos-ui.initd" \
+  install -m 0755 "$srcdir/baltek-vos-ui.initd" \
     "$pkgdir/etc/init.d/baltek-vos-ui"
 
-  # Install Wayland session config and app launcher
+  # Hyprland kiosk config
   install -d "$pkgdir/etc/baltek"
-  install -m 0644 "$srcdir/files/hyprland-vos.conf" \
+  install -m 0644 "$srcdir/hyprland-vos.conf" \
     "$pkgdir/etc/baltek/hyprland-vos.conf"
-
-  install -m 0755 "$srcdir/files/baltek-vos-app" \
-    "$pkgdir/usr/local/sbin/baltek-vos-app"
 }

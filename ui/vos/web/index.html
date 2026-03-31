@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#000000">
+  <title>VoiceOS</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Main canvas: animated circle -->
+  <canvas id="canvas"></canvas>
+
+  <!-- Provider / model status -->
+  <div id="status-bar">Initializing…</div>
+
+  <!-- Swipe hint -->
+  <div id="hint">tap to chat · swipe up for apps · swipe down for settings</div>
+
+  <!-- Processing state label -->
+  <div id="processing-label">thinking…</div>
+
+  <!-- ── Response panel (slides up from bottom) ──────────────── -->
+  <div id="response-panel" role="region" aria-label="Assistant response">
+    <div id="response-handle"></div>
+    <div id="response-scroll">
+      <pre id="response-text"></pre>
+    </div>
+  </div>
+
+  <!-- ── Text input panel (swipe up / tap) ──────────────────── -->
+  <div id="input-panel" role="dialog" aria-label="Message input">
+    <div id="input-row">
+      <textarea
+        id="chat-input"
+        rows="1"
+        placeholder="Ask anything…"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="sentences"
+        spellcheck="true"
+      ></textarea>
+      <button id="send-btn" aria-label="Send">&#9658;</button>
+    </div>
+  </div>
+
+  <!-- ── Settings panel (swipe down) ───────────────────────── -->
+  <div id="settings-panel" role="dialog" aria-label="Settings">
+    <h2>PROVIDER</h2>
+    <div class="provider-grid">
+      <button class="provider-btn" data-provider="ollama" data-model="mistral:latest">
+        Ollama
+        <small>local · mistral</small>
+      </button>
+      <button class="provider-btn" data-provider="anthropic" data-model="claude-sonnet-4-6">
+        Claude
+        <small>Sonnet 4.6</small>
+      </button>
+      <button class="provider-btn" data-provider="openai" data-model="gpt-4o-mini">
+        OpenAI
+        <small>GPT-4o mini</small>
+      </button>
+      <button class="provider-btn" data-provider="groq" data-model="llama-3.3-70b-versatile">
+        Groq
+        <small>Llama 3.3 70B</small>
+      </button>
+    </div>
+    <button id="clear-btn">Clear conversation</button>
+  </div>
+
+  <!-- ── App drawer (swipe up twice / long swipe up) ─────────── -->
+  <div id="app-drawer" role="dialog" aria-label="App drawer">
+    <input
+      id="drawer-search"
+      type="search"
+      placeholder="Search apps…"
+      autocomplete="off"
+    >
+    <div id="app-grid" role="list"></div>
+  </div>
+
+  <!-- ── Conversation history (swipe right) ─────────────────── -->
+  <div id="history-panel" role="dialog" aria-label="Conversation history">
+    <h2>HISTORY</h2>
+    <div id="history-list"></div>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
