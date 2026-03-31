@@ -1,0 +1,52 @@
+#!/bin/sh
+set -e
+
+CONF="/etc/baltek/vm.conf"
+[ -f "$CONF" ] && . "$CONF"
+
+: "${VM_DISK:=/var/lib/baltek/vm/disk.qcow2}"
+: "${VM_RAM_MB:=2048}"
+: "${VM_CPUS:=2}"
+: "${OVMF_CODE:=/usr/share/OVMF/OVMF_CODE.fd}"
+: "${OVMF_VARS:=/var/lib/baltek/vm/OVMF_VARS.fd}"
+: "${NET_MODE:=user}"
+
+# Persistent OVMF vars
+if [ -f "$OVMF_CODE" ] && [ ! -f "$OVMF_VARS" ]; then
+  if [ -f /usr/share/OVMF/OVMF_VARS.fd ]; then
+    cp /usr/share/OVMF/OVMF_VARS.fd "$OVMF_VARS"
+  elif [ -f /usr/share/OVMF/OVMF_VARS.ms.fd ]; then
+    cp /usr/share/OVMF/OVMF_VARS.ms.fd "$OVMF_VARS"
+  fi
+fi
+
+# Provision disk if absent
+if [ ! -f "$VM_DISK" ]; then
+  qemu-img create -f qcow2 "$VM_DISK" 40G
+fi
+
+NET_ARGS=""
+case "$NET_MODE" in
+  user)
+    NET_ARGS="-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
+    ;;
+  tap)
+    NET_ARGS="-netdev tap,id=n1,ifname=tap0,script=no,downscript=no -device virtio-net-pci,netdev=n1"
+    ;;
+  *)
+    echo "Unknown NET_MODE: $NET_MODE" >&2
+    exit 1
+    ;;
+esac
+
+exec qemu-system-x86_64 \
+  -name "${VM_NAME:-baltek-guest}" \
+  -machine q35,accel=kvm \
+  -cpu host \
+  -smp "$VM_CPUS" \
+  -m "$VM_RAM_MB" \
+  -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+  -drive if=pflash,format=raw,file="$OVMF_VARS" \
+  -drive file="$VM_DISK",if=virtio,cache=none,discard=unmap \
+  $NET_ARGS \
+  -nographic

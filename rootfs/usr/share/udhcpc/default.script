@@ -1,0 +1,46 @@
+#!/bin/sh
+# Minimal udhcpc script — replaces Alpine's complex version
+
+LOGFILE=/var/log/network.log
+
+log() { echo "[udhcpc $1] $*" >> "$LOGFILE" 2>/dev/null; }
+
+case "$1" in
+    bound|renew)
+        log "$1" "iface=$interface ip=$ip mask=$mask router=$router dns=$dns"
+
+        # Assign IP
+        ip addr flush dev "$interface" 2>/dev/null
+        ip addr add "$ip/$mask" dev "$interface" 2>&1 | tee -a "$LOGFILE"
+        ip link set dev "$interface" up 2>/dev/null
+
+        # Default route
+        ip route del default 2>/dev/null
+        for gw in $router; do
+            ip route add default via "$gw" dev "$interface" 2>&1 | tee -a "$LOGFILE"
+            break
+        done
+
+        # DNS — prefer DHCP-provided, fall back to public resolvers
+        {
+            for ns in $dns; do
+                echo "nameserver $ns"
+            done
+            # Always include public fallbacks
+            echo "nameserver 8.8.8.8"
+            echo "nameserver 1.1.1.1"
+        } > /etc/resolv.conf
+
+        log "$1" "done. resolv.conf: $(cat /etc/resolv.conf | tr '\n' ' ')"
+        ;;
+
+    deconfig)
+        log "deconfig" "flushing $interface"
+        ip addr flush dev "$interface" 2>/dev/null
+        ;;
+
+    leasefail|nak)
+        log "$1" "DHCP failed on $interface"
+        ;;
+esac
+exit 0

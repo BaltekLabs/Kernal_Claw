@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+rc-update add baltek-mode default >/dev/null 2>&1 || true
+rc-update del baltek-vm default >/dev/null 2>&1 || true
+
+mkdir -p /var/lib/baltek/vm /var/log/baltek
+
+sysctl --system >/dev/null 2>&1 || true
+
+exit 0

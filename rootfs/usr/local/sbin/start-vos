@@ -1,0 +1,42 @@
+#!/bin/sh
+# start-vos — launch VoiceOS pygame UI via Xorg on tty3
+
+# Xorg uses udevd for input device detection (keyboard/mouse).
+# Start it if not already running (same requirement as sway had).
+if command -v udevd >/dev/null 2>&1 && ! pgrep udevd >/dev/null 2>&1; then
+    udevadm hwdb --update 2>/dev/null || true
+    udevd --daemon 2>/var/log/udevd.log
+    sleep 1
+    udevadm trigger --action=add 2>/dev/null
+    udevadm settle 2>/dev/null || true
+fi
+
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix
+
+# Start Xorg on display :0, VT3
+Xorg :0 vt3 -nolisten tcp 2>/var/log/xorg-vos.log &
+XORG_PID=$!
+
+# Wait up to 15s for the X socket
+i=0
+while [ $i -lt 15 ]; do
+    [ -S /tmp/.X11-unix/X0 ] && break
+    sleep 1
+    i=$((i + 1))
+done
+
+if [ ! -S /tmp/.X11-unix/X0 ]; then
+    echo "Xorg failed to start — check /var/log/xorg-vos.log"
+    kill $XORG_PID 2>/dev/null
+    exit 1
+fi
+
+export DISPLAY=:0
+export VOS_FULLSCREEN=1
+export SDL_AUDIODRIVER=dummy
+export PYTHONPATH=/usr/local/lib/vos
+
+python3 /usr/local/lib/vos/main.py 2>/var/log/vos.log
+
+kill $XORG_PID 2>/dev/null

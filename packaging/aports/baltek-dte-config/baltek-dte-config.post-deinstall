@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+rc-update del baltek-mode default >/dev/null 2>&1 || true
+rc-update del baltek-vm default >/dev/null 2>&1 || true
+exit 0

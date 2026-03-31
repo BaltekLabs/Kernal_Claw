@@ -1,0 +1,19 @@
+#!/bin/sh
+# baltek-vos-app - Launch VoiceOS inside the active Wayland session.
+#
+# Called by Hyprland exec-once. At this point Hyprland has already set:
+#   WAYLAND_DISPLAY  - the compositor socket name (e.g. wayland-1)
+#   XDG_RUNTIME_DIR  - the runtime dir for the baltek user
+#
+# All this script does is point SDL2 at the Wayland backend and start Python.
+# Keep it thin - the actual application lives in /opt/baltek/vos.
+
+VOS_DIR="/opt/baltek/vos"
+PYTHON="$VOS_DIR/venv/bin/python3"
+LOG="/var/log/baltek/vos-app.log"
+
+# SDL2: native Wayland backend (no X11/XWayland)
+export SDL_VIDEODRIVER="wayland"
+export OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+
+exec "$PYTHON" "$VOS_DIR/main.py" >>"$LOG" 2>&1

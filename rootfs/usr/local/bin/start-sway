@@ -1,0 +1,31 @@
+#!/bin/sh
+# start-sway — launch the sway Wayland compositor
+# Run this after: apk add sway foot mesa-dri-gallium mesa-egl libxkbcommon font-dejavu
+
+if ! command -v sway >/dev/null 2>&1; then
+    echo "sway is not installed. Install it first:"
+    echo "  apk add sway foot mesa-dri-gallium mesa-egl libxkbcommon font-dejavu xwayland"
+    exit 1
+fi
+
+export XDG_RUNTIME_DIR=/run/user/0
+export WLR_NO_HARDWARE_CURSORS=1   # required for QEMU/VMs
+export WLR_BACKENDS=drm            # use DRM/KMS directly, not nested Wayland
+export XDG_CURRENT_DESKTOP=sway
+export XDG_SESSION_TYPE=wayland
+
+mkdir -p /run/user/0
+chmod 700 /run/user/0
+
+# Check for DRM device
+if ls /dev/dri/card* >/dev/null 2>&1; then
+    echo "[start-sway] DRM device found: $(ls /dev/dri/card*)"
+else
+    echo "[start-sway] WARNING: no /dev/dri/card* found"
+    echo "  Available DRM info: $(ls /dev/dri/ 2>/dev/null || echo 'none')"
+    echo "  dmesg GPU lines:"
+    dmesg 2>/dev/null | grep -iE "drm|gpu|virtio.gpu|display" | tail -5
+fi
+
+echo "[start-sway] Starting sway..."
+exec sway 2>&1 | tee /var/log/sway.log

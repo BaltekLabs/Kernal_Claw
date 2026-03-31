@@ -1,0 +1,46 @@
+#!/bin/sh
+# baltek-vos-launch - Start the Baltek DTE Wayland session
+#
+# Runs as the 'baltek' user under OpenRC.
+# Launches Hyprland as the Wayland compositor; Hyprland then
+# starts VoiceOS via exec-once in /etc/baltek/hyprland-vos.conf.
+#
+# Environment variables (read from /etc/baltek/dte.conf):
+#   BALTEK_UI_MODE  chat|vos (default: vos)
+#   OLLAMA_HOST     Ollama server URL (default: http://localhost:11434)
+
+set -e
+
+CONF="/etc/baltek/dte.conf"
+LOG="/var/log/baltek/vos-ui.log"
+
+[ -f "$CONF" ] && . "$CONF"
+
+BALTEK_UI_MODE="${BALTEK_UI_MODE:-vos}"
+
+if [ "$BALTEK_UI_MODE" = "chat" ]; then
+  exec /bin/sh
+fi
+
+# --- Wayland session environment ---
+# XDG_RUNTIME_DIR is owned by the baltek user and created by the initd start_pre
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_SESSION_TYPE="wayland"
+
+# SDL2: native Wayland backend - no X11/XWayland needed
+export SDL_VIDEODRIVER="wayland"
+
+# Needed for wlroots compositors running inside VMs (no-op on real hardware)
+export WLR_NO_HARDWARE_CURSORS="1"
+
+export OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+
+mkdir -p /var/log/baltek
+
+# Start Ollama in the background if not already running
+if ! pgrep -x ollama >/dev/null 2>&1; then
+  ollama serve >>/var/log/baltek/ollama.log 2>&1 &
+  sleep 2
+fi
+
+exec Hyprland --config /etc/baltek/hyprland-vos.conf >>"$LOG" 2>&1

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Linux</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;
+  --text:#e6edf3;--dim:#8b949e;--accent:#58a6ff;
+  --green:#3fb950;--user-bg:#1f6feb;--red:#f85149;
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:13px 20px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 7px var(--green)}
+header h1{font-size:15px;font-weight:600;flex:1}
+.badge{font-size:11px;color:var(--dim);background:var(--bg);padding:3px 10px;border-radius:20px;border:1px solid var(--border)}
+#chat{flex:1;overflow-y:auto;padding:24px 20px;display:flex;flex-direction:column;gap:20px;scroll-behavior:smooth}
+#chat::-webkit-scrollbar{width:4px}
+#chat::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.row{display:flex;flex-direction:column;gap:4px}
+.row.user{align-items:flex-end}
+.row.ai{align-items:flex-start}
+.lbl{font-size:11px;color:var(--dim);padding:0 4px}
+.bubble{max-width:78%;padding:12px 17px;border-radius:16px;line-height:1.65;font-size:14px;word-break:break-word}
+.row.user .bubble{background:var(--user-bg);color:#fff;border-bottom-right-radius:4px}
+.row.ai  .bubble{background:var(--surface);border:1px solid var(--border);border-bottom-left-radius:4px}
+.bubble strong{font-weight:600}
+.bubble em{font-style:italic;color:var(--dim)}
+.bubble code{background:var(--bg);padding:2px 6px;border-radius:4px;font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;color:#ff7b72}
+.bubble pre{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;margin:10px 0;overflow-x:auto}
+.bubble pre code{background:none;padding:0;color:var(--text);font-size:13px;white-space:pre}
+.thinking{display:flex;align-items:center;gap:6px;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:16px;border-bottom-left-radius:4px}
+.td{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:blink 1.4s infinite ease-in-out}
+.td:nth-child(2){animation-delay:.2s}.td:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{transform:scale(.7);opacity:.4}40%{transform:scale(1);opacity:1}}
+#bar{background:var(--surface);border-top:1px solid var(--border);padding:15px 20px;display:flex;gap:10px;align-items:flex-end;flex-shrink:0}
+#inp{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text);padding:11px 15px;font-size:14px;font-family:inherit;resize:none;min-height:44px;max-height:140px;outline:none;transition:border-color .15s;line-height:1.5}
+#inp:focus{border-color:var(--accent)}
+#inp::placeholder{color:var(--dim)}
+.btn{background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);cursor:pointer;width:44px;height:44px;font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s}
+.btn:hover{background:var(--border)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+#sbtn{background:var(--accent);border-color:var(--accent);color:#0d1117;font-size:16px;font-weight:700}
+#sbtn:hover:not(:disabled){background:#79c0ff;border-color:#79c0ff}
+#vbtn.rec{background:var(--red);border-color:var(--red);animation:breathe 1s infinite}
+@keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(248,81,73,.5)}50%{box-shadow:0 0 0 8px rgba(248,81,73,0)}}
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="sdot"></div>
+  <h1>AI Linux</h1>
+  <span class="badge" id="bdg">connecting...</span>
+</header>
+<div id="chat">
+  <div class="row ai">
+    <span class="lbl">AI</span>
+    <div class="bubble">Hello! I am your AI assistant with full control of this Linux system. I can run commands, install software, manage files, browse the web, and more. What would you like to do?</div>
+  </div>
+</div>
+<div id="bar">
+  <textarea id="inp" rows="1" placeholder="Ask anything... (Enter to send, Shift+Enter for newline)"></textarea>
+  <button class="btn" id="vbtn" title="Voice input">&#127908;</button>
+  <button class="btn" id="sbtn" title="Send (Enter)">&#10148;</button>
+</div>
+<script>
+var chat=document.getElementById('chat'),
+    inp=document.getElementById('inp'),
+    sbtn=document.getElementById('sbtn'),
+    vbtn=document.getElementById('vbtn'),
+    sdot=document.getElementById('sdot'),
+    bdg=document.getElementById('bdg');
+
+function setStatus(on){
+  sdot.style.background=on?'var(--green)':'var(--red)';
+  sdot.style.boxShadow=on?'0 0 7px var(--green)':'0 0 7px var(--red)';
+  bdg.textContent=on?'online':'offline';
+}
+
+fetch('/api/ping').then(function(){setStatus(true)}).catch(function(){setStatus(false)});
+
+var _rszTimer=null;
+inp.addEventListener('input',function(){
+  clearTimeout(_rszTimer);
+  _rszTimer=setTimeout(function(){
+    inp.style.height='auto';
+    inp.style.height=Math.min(inp.scrollHeight,140)+'px';
+  },50);
+});
+
+inp.addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
+});
+sbtn.addEventListener('click',send);
+
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function md(t){
+  t=t.replace(/```([a-z]*)\n?([\s\S]*?)```/g,function(_,l,c){return '<pre><code>'+esc(c.trim())+'</code></pre>';});
+  t=t.replace(/`([^`\n]+)`/g,function(_,c){return '<code>'+esc(c)+'</code>';});
+  t=t.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  t=t.replace(/\*([^*\n]+)\*/g,'<em>$1</em>');
+  t=t.replace(/\n/g,'<br>');
+  return t;
+}
+
+function addRow(role,content,isHTML){
+  var row=document.createElement('div');row.className='row '+role;
+  var lbl=document.createElement('span');lbl.className='lbl';lbl.textContent=role==='user'?'You':'AI';
+  var bub=document.createElement('div');bub.className='bubble';
+  if(isHTML)bub.innerHTML=content;else bub.textContent=content;
+  row.appendChild(lbl);row.appendChild(bub);
+  chat.appendChild(row);chat.scrollTop=chat.scrollHeight;
+  return bub;
+}
+
+function showThink(){
+  var row=document.createElement('div');row.className='row ai';
+  var lbl=document.createElement('span');lbl.className='lbl';lbl.textContent='AI';
+  var t=document.createElement('div');t.className='thinking';
+  t.innerHTML='<div class="td"></div><div class="td"></div><div class="td"></div>';
+  row.appendChild(lbl);row.appendChild(t);
+  chat.appendChild(row);chat.scrollTop=chat.scrollHeight;
+  return row;
+}
+
+function speak(t){
+  if(!window.speechSynthesis)return;
+  var plain=t.replace(/<[^>]+>/g,'').replace(/```[\s\S]*?```/g,'code block').slice(0,400);
+  speechSynthesis.cancel();
+  var u=new SpeechSynthesisUtterance(plain);u.rate=1.1;
+  speechSynthesis.speak(u);
+}
+
+async function send(){
+  var txt=inp.value.trim();
+  if(!txt||sbtn.disabled)return;
+  inp.value='';inp.style.height='auto';sbtn.disabled=true;
+  addRow('user',txt,false);
+  var th=showThink();
+  try{
+    var ctrl=new AbortController();
+    var timer=setTimeout(function(){ctrl.abort();},90000);
+    var r=await fetch('/api/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:txt}),
+      signal:ctrl.signal
+    });
+    clearTimeout(timer);
+    var d=await r.json();
+    th.remove();
+    if(d.ok){addRow('ai',md(d.reply),true);speak(d.reply);setStatus(true);}
+    else{addRow('ai','Error: '+(d.error||'unknown'),false);}
+  }catch(e){
+    th.remove();
+    addRow('ai','Connection error: '+e.message,false);
+    setStatus(false);
+  }
+  sbtn.disabled=false;inp.focus();
+}
+
+var recog=null;
+(function(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){vbtn.title='Voice not available';vbtn.style.opacity='.4';return;}
+  recog=new SR();recog.continuous=false;recog.interimResults=true;recog.lang='en-US';
+  recog.onresult=function(e){
+    var fin='',intr='';
+    for(var i=e.resultIndex;i<e.results.length;i++){
+      var tt=e.results[i][0].transcript;
+      if(e.results[i].isFinal)fin+=tt;else intr+=tt;
+    }
+    inp.value=fin||intr;
+    inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,140)+'px';
+    if(fin){vbtn.classList.remove('rec');send();}
+  };
+  recog.onend=function(){vbtn.classList.remove('rec');};
+  recog.onerror=function(){vbtn.classList.remove('rec');};
+})();
+
+vbtn.addEventListener('click',function(){
+  if(!recog)return;
+  if(vbtn.classList.contains('rec')){recog.stop();}
+  else{recog.start();vbtn.classList.add('rec');}
+});
+
+inp.focus();
+</script>
+</body>
+</html>

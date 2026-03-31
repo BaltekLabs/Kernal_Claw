@@ -1,0 +1,84 @@
+# VoiceOS / Baltek DTE Agent Configuration
+# ==========================================
+# All values can be overridden with environment variables.
+# See config/settings.py for the full env var mapping.
+
+# LLM Provider Configuration
+llm:
+  # Active provider: ollama | openai | anthropic | groq
+  provider: ollama
+
+  # Active model (provider-specific). Leave blank to use provider default.
+  # ollama:    mistral:latest, llama3.1:latest, codellama:latest, phi:latest
+  # openai:    gpt-4o, gpt-4o-mini, o1, o3-mini
+  # anthropic: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001
+  # groq:      llama-3.3-70b-versatile, mixtral-8x7b-32768, gemma2-9b-it
+  model: mistral:latest
+
+  # Ollama server URL (local by default)
+  ollama_url: http://localhost:11434
+
+  # API keys (prefer env vars: OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY)
+  # openai_api_key: sk-...
+  # anthropic_api_key: sk-ant-...
+  # groq_api_key: gsk_...
+
+# Tool Configuration
+tools:
+  # Shell command timeout in seconds
+  shell_timeout: 30
+
+  # HTTP request timeout in seconds
+  http_timeout: 30
+
+# Skills Configuration
+skills:
+  # Directories to load skills from (searched recursively for *.md files)
+  paths:
+    - skills/  # relative to vos/ directory
+
+# Persistent Memory
+memory:
+  dir: memory/  # relative to vos/ directory
+
+# Heartbeat (proactive background tasks)
+heartbeat:
+  enabled: true
+  # System health check interval in seconds (default: 5 minutes)
+  health_interval_seconds: 300
+  # Alert thresholds
+  cpu_alert_threshold: 90
+  memory_alert_threshold: 90
+
+# Remote Skills — auto-fetch from GitHub repos
+remote_skills:
+  # Set false to disable network fetching entirely (use local cache if available)
+  enabled: true
+
+  # How many hours before re-fetching a file (default 24)
+  ttl_hours: 24
+
+  # Optional GitHub PAT — raises rate limit from 60 to 5000 req/hr
+  # Prefer the env var GITHUB_TOKEN
+  # github_token: ghp_...
+
+  # Where to cache downloaded skill files (default: ui/vos/.skill_cache)
+  # cache_dir: ~/.vos/skill_cache
+
+  # Repos + paths to pull from.  Each entry becomes a batch of skills.
+  sources:
+    - owner: openai
+      repo: openai-agents-python
+      path: docs
+    - owner: openai
+      repo: openai-agents-python
+      path: examples
+    - owner: openai
+      repo: openai-cookbook
+      path: articles
+
+# UI Settings
+ui:
+  # Window dimensions (null = 80% of screen)
+  width: null
+  height: null

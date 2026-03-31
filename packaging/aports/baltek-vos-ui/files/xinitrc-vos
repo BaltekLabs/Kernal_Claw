@@ -1,0 +1,14 @@
+#!/bin/sh
+# /etc/baltek/xinitrc-vos - Minimal X session for VoiceOS UI
+
+# Disable screen blanking and power management
+xset s off
+xset -dpms
+xset s noblank
+
+# Hide cursor when idle
+unclutter -idle 3 -root &
+
+# Launch VoiceOS
+cd /opt/baltek/vos
+exec /opt/baltek/vos/venv/bin/python3 /opt/baltek/vos/main.py

@@ -1,0 +1,12 @@
+# Core UI
+pygame
+psutil
+aiohttp
+
+# YAML (skills/config/memory)
+PyYAML
+
+# LLM providers — install only what you need:
+# Ollama is local — no package required (uses aiohttp above)
+# openai>=1.0.0          # for OpenAI + Groq (OpenAI-compatible)
+# anthropic>=0.20.0      # for Anthropic Claude

@@ -1,0 +1,45 @@
+#!/bin/sh
+set -e
+
+CMDLINE="$(cat /proc/cmdline 2>/dev/null || true)"
+CONF="/etc/baltek/dte.conf"
+
+# If not in DTE mode, do nothing.
+echo "$CMDLINE" | grep -q "baltek_mode=dte" || exit 0
+
+# Load defaults from config file
+[ -f "$CONF" ] && . "$CONF"
+
+# Allow kernel cmdline to override UI mode: baltek_ui=chat  or  baltek_ui=vos
+for param in $CMDLINE; do
+  case "$param" in
+    baltek_ui=*)
+      BALTEK_UI_MODE="${param#baltek_ui=}"
+      ;;
+  esac
+done
+
+export BALTEK_UI_MODE="${BALTEK_UI_MODE:-vos}"
+export OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+
+# Apply sysctl settings
+sysctl --system >/dev/null 2>&1 || true
+
+# Start the VM service
+rc-service baltek-vm start || true
+
+# Start the selected UI
+case "$BALTEK_UI_MODE" in
+  vos)
+    rc-service baltek-vos-ui start || true
+    ;;
+  chat)
+    # Plain shell fallback - nothing extra to start (tty1 handles it)
+    ;;
+  *)
+    echo "Unknown BALTEK_UI_MODE='$BALTEK_UI_MODE', defaulting to vos"
+    rc-service baltek-vos-ui start || true
+    ;;
+esac
+
+exit 0

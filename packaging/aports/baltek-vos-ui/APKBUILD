@@ -1,0 +1,55 @@
+# Maintainer: BaltekLabs <balteklabssc@gmail.com>
+pkgname=baltek-vos-ui
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="VoiceOS - Animated circle UI with Ollama LLM integration for Baltek DTE"
+url="https://github.com/BaltekLabs/linux"
+arch="noarch"
+license="MIT"
+depends="
+  python3
+  py3-pip
+  py3-pygame
+  py3-psutil
+  py3-aiohttp
+  ollama
+  hyprland
+  seatd
+  wlroots
+  mesa-dri-gallium
+  libseat
+  xdg-user-dirs
+"
+install="$pkgname.post-install $pkgname.post-deinstall"
+source=""
+builddir="$srcdir"
+
+build() { :; }
+
+package() {
+  # Install the VoiceOS source tree
+  install -d "$pkgdir/opt/baltek/vos"
+  cp -r "$builddir"/../../../../../ui/vos/src/. "$pkgdir/opt/baltek/vos/"
+
+  # Install requirements
+  install -m 0644 "$builddir"/../../../../../ui/vos/requirements.txt \
+    "$pkgdir/opt/baltek/vos/requirements.txt"
+
+  # Install launcher script
+  install -d "$pkgdir/usr/local/sbin"
+  install -m 0755 "$srcdir/files/baltek-vos-launch" \
+    "$pkgdir/usr/local/sbin/baltek-vos-launch"
+
+  # Install OpenRC service
+  install -d "$pkgdir/etc/init.d"
+  install -m 0755 "$srcdir/files/baltek-vos-ui.initd" \
+    "$pkgdir/etc/init.d/baltek-vos-ui"
+
+  # Install Wayland session config and app launcher
+  install -d "$pkgdir/etc/baltek"
+  install -m 0644 "$srcdir/files/hyprland-vos.conf" \
+    "$pkgdir/etc/baltek/hyprland-vos.conf"
+
+  install -m 0755 "$srcdir/files/baltek-vos-app" \
+    "$pkgdir/usr/local/sbin/baltek-vos-app"
+}

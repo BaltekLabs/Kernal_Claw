@@ -1,0 +1,19 @@
+pkgname=baltek-dte
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Baltek DTE meta package (dependencies only)"
+url="https://github.com/BaltekLabs/linux"
+arch="all"
+license="MIT"
+depends="
+  baltek-dte-config
+  baltek-vos-ui
+  qemu-system-x86_64
+  qemu-img
+  ovmf
+  iproute2
+  bridge-utils
+  openssh
+"
+build() { :; }
+package() { :; }

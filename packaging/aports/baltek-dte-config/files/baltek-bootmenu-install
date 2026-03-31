@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+
+CONF="/boot/extlinux.conf"
+
+if [ ! -f "$CONF" ]; then
+  echo "extlinux.conf not found at $CONF. This system may be using GRUB."
+  echo "If GRUB: implement /etc/grub.d/40_baltek_dte + grub-mkconfig."
+  exit 1
+fi
+
+# Only add once
+grep -q "LABEL baltek-dte" "$CONF" && { echo "baltek-dte entry already present"; exit 0; }
+
+# Append boot entries: one for the VoiceOS UI, one for plain chat/shell mode
+cat >> "$CONF" <<'EOF'
+
+LABEL baltek-dte
+  MENU LABEL Baltek DTE - VoiceOS UI (baltek_mode=dte)
+  LINUX /vmlinuz-lts
+  INITRD /initramfs-lts
+  APPEND root=UUID=REPLACE_ME ro quiet baltek_mode=dte baltek_ui=vos
+
+LABEL baltek-dte-chat
+  MENU LABEL Baltek DTE - Chat/Shell mode (baltek_mode=dte)
+  LINUX /vmlinuz-lts
+  INITRD /initramfs-lts
+  APPEND root=UUID=REPLACE_ME ro quiet baltek_mode=dte baltek_ui=chat
+EOF
+
+echo
+echo "Added baltek-dte and baltek-dte-chat entries to $CONF"
+echo "IMPORTANT: replace root=UUID=REPLACE_ME with your actual root UUID."
+echo "Find it with: blkid | grep TYPE"

@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0
+menu "AI Subsystem"
+
+config AI_CORE
+	tristate "AI core kernel subsystem"
+	help
+	  Enable the AI core kernel subsystem. Provides kernel-level
+	  infrastructure for the aicore daemon to access system metrics
+	  and register as a kernel client via /proc/ai/.
+
+	  If unsure, say Y.
+
+config AI_PROC_INTERFACE
+	bool "AI /proc metrics interface"
+	depends on AI_CORE
+	help
+	  Expose system metrics (load average, memory, uptime) via
+	  /proc/ai/metrics for the userspace AI daemon.
+
+	  Recommended when AI_CORE is enabled.
+
+config AI_BUILTIN_CLAWS
+	bool "AI built-in system monitoring claws"
+	depends on AI_CORE
+	help
+	  Enable lightweight hooks into kernel subsystems to gather
+	  extended system state (per-CPU load, task counts) via
+	  /proc/ai/claws.
+
+endmenu

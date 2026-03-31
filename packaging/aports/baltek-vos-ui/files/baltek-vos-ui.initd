@@ -1,0 +1,47 @@
+#!/sbin/openrc-run
+name="baltek-vos-ui"
+description="VoiceOS Wayland session for Baltek DTE"
+command="/usr/local/sbin/baltek-vos-launch"
+command_user="baltek:baltek"
+command_background="yes"
+pidfile="/run/baltek-vos-ui.pid"
+output_log="/var/log/baltek/vos-ui.log"
+error_log="/var/log/baltek/vos-ui.err"
+
+depend() {
+  need net localmount seatd
+  after baltek-vm
+}
+
+start_pre() {
+  checkpath -d -m 0755 /var/log/baltek
+
+  # Only start in DTE mode
+  if ! grep -q "baltek_mode=dte" /proc/cmdline 2>/dev/null; then
+    einfo "Not in DTE mode - skipping VoiceOS UI start"
+    return 1
+  fi
+
+  # Provision the Wayland XDG_RUNTIME_DIR for the baltek user.
+  # Wayland requires this directory to be mode 0700 and owned by the session user.
+  local uid
+  uid=$(id -u baltek 2>/dev/null) || { eerror "baltek user not found"; return 1; }
+  checkpath -d -m 0700 -o "baltek:baltek" "/run/user/${uid}"
+  export XDG_RUNTIME_DIR="/run/user/${uid}"
+}
+
+start() {
+  ebegin "Starting ${name}"
+  start-stop-daemon --start --background \
+    --make-pidfile --pidfile "$pidfile" \
+    --stdout "$output_log" --stderr "$error_log" \
+    --user baltek \
+    --exec "$command"
+  eend $?
+}
+
+stop() {
+  ebegin "Stopping ${name}"
+  start-stop-daemon --stop --pidfile "$pidfile"
+  eend $?
+}

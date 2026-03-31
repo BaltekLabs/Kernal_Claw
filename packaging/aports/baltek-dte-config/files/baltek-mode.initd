@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+name="baltek-mode"
+description="Baltek mode selector (starts DTE services when baltek_mode=dte is on cmdline)"
+command="/usr/local/sbin/baltek-mode-run"
+command_background="no"
+
+depend() {
+  need localmount
+  after modules
+  before net
+}
+
+start() {
+  ebegin "Baltek mode selector"
+  "$command"
+  eend $?
+}
