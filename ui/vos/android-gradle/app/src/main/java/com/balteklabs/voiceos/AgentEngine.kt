@@ -84,11 +84,37 @@ class ConversationContext(val maxMessages: Int = 24) {
         trim()
     }
 
+    fun addRawMessage(msg: Map<String, Any>) = synchronized(this) {
+        _messages += msg
+        trim()
+    }
+
     fun snapshot(): List<Map<String, Any>> = synchronized(this) { _messages.toList() }
     fun clear()                             = synchronized(this) { _messages.clear() }
 
     private fun trim() {
-        while (_messages.size > maxMessages) _messages.removeAt(0)
+        while (_messages.size > maxMessages) {
+            _messages.removeAt(0)
+            // Remove orphaned tool-result messages that lost their assistant tool_use
+            while (_messages.isNotEmpty()) {
+                val first = _messages[0]
+                val role = first["role"] as? String
+                if (role == "tool") {
+                    _messages.removeAt(0)
+                } else if (role == "user") {
+                    val content = first["content"]
+                    if (content is List<*> && content.firstOrNull().let {
+                            it is Map<*, *> && it["type"] == "tool_result"
+                        }) {
+                        _messages.removeAt(0)
+                    } else {
+                        break
+                    }
+                } else {
+                    break
+                }
+            }
+        }
     }
 }
 
@@ -204,11 +230,7 @@ class AgentEngine(
                     }
                 )
                 messages += toolMsg
-                context.addUser("[tool_results]")   // placeholder so context stays in sync
-                // Replace placeholder with actual tool message
-                val snap = context.snapshot().toMutableList()
-                snap[snap.lastIndex] = toolMsg
-                // (we just track in working messages for anthropic format)
+                context.addRawMessage(toolMsg)
             } else {
                 for (tr in toolResults) {
                     val toolMsg = mapOf(
