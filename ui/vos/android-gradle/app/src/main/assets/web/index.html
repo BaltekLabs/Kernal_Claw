@@ -31,7 +31,12 @@
   </div>
 
   <!-- Swipe hint -->
-  <div id="hint">tap to chat · swipe up for apps · swipe down for settings</div>
+  <div id="hint">tap · swipe up for apps · swipe right for menu</div>
+
+  <!-- Bottom-half message display (feedback / heartbeat notices) -->
+  <div id="msg-display" aria-live="polite">
+    <div id="msg-display-text"></div>
+  </div>
 
   <!-- Skill indicator (shown briefly when skill routing activates) -->
   <div id="skill-indicator"></div>
@@ -105,75 +110,8 @@
     ></textarea>
   </div>
 
-  <!-- ── Settings panel (swipe down) ───────────────────────── -->
-  <div id="settings-panel" role="dialog" aria-label="Settings">
-    <h2>PROVIDER</h2>
-    <div class="provider-grid">
-      <button class="provider-btn" data-provider="ollama" data-model="mistral:latest">
-        Ollama
-        <small>local · mistral</small>
-      </button>
-      <button class="provider-btn" data-provider="anthropic" data-model="claude-sonnet-4-6">
-        Claude
-        <small>Sonnet 4.6</small>
-      </button>
-      <button class="provider-btn" data-provider="openai" data-model="gpt-4o-mini">
-        OpenAI
-        <small>GPT-4o mini</small>
-      </button>
-      <button class="provider-btn" data-provider="groq" data-model="llama-3.3-70b-versatile">
-        Groq
-        <small>Llama 3.3 70B</small>
-      </button>
-    </div>
-    <button id="clear-btn">Clear conversation</button>
-    <div id="notif-settings-row">
-      <button id="notif-settings-btn" class="notif-settings-btn">Notification access</button>
-      <span id="notif-settings-status"></span>
-    </div>
-
-    <!-- Ollama controls (shown when ollama selected) -->
-    <div id="ollama-model-row" style="display:none;">
-      <input
-        id="ollama-model-input"
-        type="text"
-        placeholder="Model name, e.g. phi3:mini"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      >
-      <button id="save-model-btn">Set</button>
-    </div>
-    <div id="ollama-url-row" style="display:none;">
-      <input
-        id="ollama-url-input"
-        type="url"
-        placeholder="http://127.0.0.1:11434"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      >
-      <button id="test-ollama-btn">Test</button>
-    </div>
-    <div id="ollama-status"></div>
-
-    <!-- API key (shown for cloud providers) -->
-    <div id="api-key-row" style="display:none;">
-      <input
-        id="api-key-input"
-        type="password"
-        placeholder="Paste API key…"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      >
-      <button id="save-key-btn">Save</button>
-    </div>
-    <div id="key-status"></div>
-  </div>
+  <!-- settings-panel kept as invisible stub so JS refs don't break -->
+  <div id="settings-panel" style="display:none;" aria-hidden="true"></div>
 
   <!-- ── App drawer (swipe up twice / long swipe up) ─────────── -->
   <div id="app-drawer" role="dialog" aria-label="App drawer">
@@ -190,10 +128,56 @@
     <div id="app-grid" role="list"></div>
   </div>
 
-  <!-- ── Conversation history (swipe right) ─────────────────── -->
-  <div id="history-panel" role="dialog" aria-label="Conversation history">
-    <h2>HISTORY</h2>
-    <div id="history-list"></div>
+  <!-- ── Left panel: history (top) + settings (bottom) ──────── -->
+  <div id="history-panel" role="dialog" aria-label="Menu">
+
+    <!-- History section -->
+    <div id="history-section">
+      <h2>HISTORY</h2>
+      <div id="history-list"></div>
+    </div>
+
+    <!-- Settings section -->
+    <div id="side-settings">
+      <h2>PROVIDER</h2>
+      <div class="provider-grid">
+        <button class="provider-btn" data-provider="ollama" data-model="mistral:latest">
+          Ollama<small>local · mistral</small>
+        </button>
+        <button class="provider-btn" data-provider="anthropic" data-model="claude-sonnet-4-6">
+          Claude<small>Sonnet 4.6</small>
+        </button>
+        <button class="provider-btn" data-provider="openai" data-model="gpt-4o-mini">
+          OpenAI<small>GPT-4o mini</small>
+        </button>
+        <button class="provider-btn" data-provider="groq" data-model="llama-3.3-70b-versatile">
+          Groq<small>Llama 3.3 70B</small>
+        </button>
+      </div>
+      <button id="clear-btn">Clear conversation</button>
+      <div id="notif-settings-row">
+        <button id="notif-settings-btn" class="notif-settings-btn">Notification access</button>
+        <span id="notif-settings-status"></span>
+      </div>
+      <div id="ollama-model-row" style="display:none;">
+        <input id="ollama-model-input" type="text" placeholder="Model name, e.g. phi3:mini"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="save-model-btn">Set</button>
+      </div>
+      <div id="ollama-url-row" style="display:none;">
+        <input id="ollama-url-input" type="url" placeholder="http://127.0.0.1:11434"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="test-ollama-btn">Test</button>
+      </div>
+      <div id="ollama-status"></div>
+      <div id="api-key-row" style="display:none;">
+        <input id="api-key-input" type="password" placeholder="Paste API key…"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="save-key-btn">Save</button>
+      </div>
+      <div id="key-status"></div>
+    </div>
+
   </div>
 
   <!-- ── Task overlay (rolls up from bottom-right) ──────────── -->

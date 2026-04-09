@@ -3,7 +3,7 @@
  *
  * Gestures:
  *   Tap / swipe up        → open text input
- *   Swipe down            → toggle settings panel
+ *   Swipe down            → close active panel
  *   Swipe left            → dismiss
  *   Swipe right           → conversation history
  *
@@ -29,6 +29,9 @@ const responseActions      = document.getElementById('response-actions');
 const followupVoiceBtn     = document.getElementById('followup-voice-btn');
 const followupTypeBtn      = document.getElementById('followup-type-btn');
 const followupClearBtn     = document.getElementById('followup-clear-btn');
+
+const msgDisplay      = document.getElementById('msg-display');
+const msgDisplayText  = document.getElementById('msg-display-text');
 
 const skillIndicator  = document.getElementById('skill-indicator');
 const queueBadge      = document.getElementById('queue-badge');
@@ -339,19 +342,18 @@ async function executeCommand(cmd) {
   }
 }
 
+let msgDisplayTimer = null;
+function showMsgDisplay(text, durationMs = 5000) {
+  msgDisplayText.textContent = text;
+  msgDisplay.classList.add('visible');
+  clearTimeout(msgDisplayTimer);
+  msgDisplayTimer = setTimeout(() => msgDisplay.classList.remove('visible'), durationMs);
+}
+
 function showFeedback(msg) {
-  responseText.textContent = msg;
-  currentResponse = msg;
-  responsePanel.classList.add('visible');
-  activePanel = 'response';
+  showMsgDisplay(msg, 4000);
   setCircleState(CircleState.RESPONDING);
-  hintEl.style.opacity = '0';
-  setTimeout(() => {
-    if (!isProcessing) {
-      setCircleState(CircleState.IDLE);
-      hintEl.style.opacity = '1';
-    }
-  }, 3000);
+  setTimeout(() => { if (!isProcessing) setCircleState(CircleState.IDLE); }, 3000);
 }
 
 function findApp(query) {
@@ -536,6 +538,9 @@ function showPanel(name) {
     setCircleState(CircleState.LISTENING);
     // Default to voice mode; keyboard is opt-in
     showInputVoiceMode();
+  } else {
+    // Dismiss keyboard whenever any non-input panel opens
+    chatInput.blur();
   }
   if (name === 'drawer') loadApps();
   if (name !== 'input') hideSuggestions();
@@ -792,7 +797,7 @@ const SWIPE_MAX_PERP = 80;
 const LONG_PRESS_MS  = 500;
 
 function isScrollableTarget(el) {
-  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, settingsPanel, suggestionsEl];
+  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl];
   return panels.some(p => p.contains(el));
 }
 
@@ -864,9 +869,8 @@ function onSwipeUp() {
 }
 
 function onSwipeDown() {
-  if (activePanel === 'drawer') { closePanel('drawer'); return; }
   if (activePanel) { closeAllPanels(); return; }
-  showPanel('settings');
+  // No panel open — swipe-down does nothing (settings are in left panel)
 }
 
 function onSwipeLeft()  {
@@ -880,7 +884,7 @@ function onSwipeRight() {
   showPanel('history');
 }
 
-function onLongPress() { showPanel('settings'); }
+function onLongPress() { showPanel('history'); }
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeAllPanels(); return; }
@@ -1539,13 +1543,7 @@ function runHeartbeat() {
 }
 
 function showHeartbeatNotice(text) {
-  // Briefly show in hint area rather than overwriting any active response
-  hintEl.textContent = text;
-  hintEl.style.opacity = '1';
-  setTimeout(() => {
-    hintEl.textContent = 'tap to chat · swipe up for apps · swipe down for settings';
-    if (!isProcessing) hintEl.style.opacity = '1';
-  }, 6000);
+  showMsgDisplay(text, 7000);
 }
 
 // ── Boot ────────────────────────────────────────────────────────
