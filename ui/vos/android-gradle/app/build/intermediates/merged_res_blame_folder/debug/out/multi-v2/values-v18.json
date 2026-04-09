@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.balteklabs.voiceos.app-mergeDebugResources-18:/values-v18/values-v18.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\Admin\\.gradle\\caches\\8.10\\transforms\\305810aa870a736f98ea0ff3eea1b975\\transformed\\appcompat-1.6.1\\res\\values-v18\\values-v18.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "48",
+                        "endOffsets": "99"
+                    }
+                }
+            ]
+        }
+    ]
+}
