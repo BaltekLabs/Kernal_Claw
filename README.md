@@ -1,67 +1,80 @@
-# Kernal_Claw
+# Kernal Claw 🦀
+
+![Colonel Claw mascot](/scripts/colonel_claw.png)
 
 > **Note:** The repository name currently says `Kernal_Claw`; this will be corrected to `Kernel_Claw`.
 
-Kernal_Claw is a **kernel-level AI agent platform**: the project explores what becomes possible when agent behavior is integrated close to the operating system core instead of living only in user-space apps.
+**Kernal Claw** is a custom Linux kernel distribution and multi-platform AI interface system. We are exploring what becomes possible when AI agent behavior is integrated *close to the operating system core* instead of living only in user-space apps.
 
-This README focuses on system intent and operator value first, with mascot branding second.
+By putting intelligence where system truth already exists (scheduler, memory, I/O, process state, security context), Kernal Claw reduces the lag between detection and response. This enables powerful, context-aware policy enforcement and deterministic automation.
 
-## What this system is trying to do
+## 🚀 The Vision: Kernel-Aware Agency
 
-Kernal_Claw is designed around a simple idea:
-
-- Put intelligence where system truth already exists (scheduler, memory, I/O, process state, security context).
-- Reduce lag between detection and response.
-- Enable policy + automation with deep runtime awareness.
-
-In short, this is about **kernel-aware agency** for performance, reliability, and control.
-
-## Why an agent in/near the kernel matters
-
-Traditional user-space agents can be powerful, but they often have blind spots and delayed visibility.
-Kernel-adjacent intelligence can provide:
-
+Traditional user-space agents have blind spots and delayed visibility. Kernal Claw provides:
 - **Lower-latency decisions** from direct system telemetry.
 - **Richer context** across process, memory, and device behavior.
 - **Stronger policy enforcement paths** anchored in core system mechanisms.
-- **More deterministic automation** for critical operations.
+- **Autonomous remediation loops** (Detect → Reason → Act) for common failure classes.
 
-## Capability themes
+## 🏗️ Architecture
 
-This repository supports experimentation and development in areas such as:
+Kernal Claw is designed around a robust three-tier architecture:
 
-1. **Observability at system depth**
-   - Runtime signal collection from low-level subsystems.
-   - Structured event streams suitable for agent reasoning.
+### Tier 1: Kernel AI Subsystem (`kernel/ai/`)
+Custom loadable kernel modules written in C that expose the OS directly to the AI agent.
+- **`ai_core.c`**: Spinlock-protected client registry, exposes `/proc/ai/status`.
+- **`ai_claws.c`**: Per-CPU load tracking hooks.
+- **`ai_proc.c`**: `/proc/ai/metrics` interface.
 
-2. **Policy and guardrails**
-   - Rule-driven behavior for safety-critical operations.
-   - Clear boundaries for what an automated agent may execute.
+### Tier 2: Userspace Daemon (`tools/aicore/`, `tools/dte/`)
+- **aicore**: A C-based daemon (with `libcurl` and `pthreads`) that registers with the kernel module, exposes an HTTP API, and hosts an embedded HTML UI.
+- **dte**: A text-mode AI chat terminal (`libncursesw`) for TTY environments.
 
-3. **Autonomous remediation loops**
-   - Detect → reason → act workflows for common failure classes.
-   - Built-in preference for reversible and auditable actions.
+### Tier 3: AI Interface Layer ("VoiceOS" - `ui/vos/`)
+A multi-platform UI with a shared event-bus architecture, supporting hot-swappable LLMs (Ollama, OpenAI, Anthropic, Groq).
+- **Desktop**: Python/Pygame-based animated nodal-net canvas.
+- **Android Launcher**: Kotlin WebView application interacting with an embedded NanoHTTPD web server.
 
-4. **Operator-in-the-loop control**
-   - Human override and approval patterns for high-impact changes.
-   - Explainable action trails for trust and postmortem analysis.
+## 🛠️ Quick Start & Build Instructions
 
-## Mascot (secondary branding): Colonel Claw
+Kernal Claw can be deployed in multiple ways: as a fully bootable standalone ISO, an Alpine Linux APK, or an Android launcher.
 
-Colonel Claw is a **crab** mascot — still a playful **Kernel/Colonel** pun, now with claws that match the name.
-He is intentionally **not** the product focus; he is a visual identity for docs, demos, and CLI banners.
-
-Generate the PNG locally (so PRs can stay text-only if your forge blocks binary diffs):
-
+### 1. Bootable ISO & Kernel
+Configure and build the AI-enabled kernel:
 ```bash
-python scripts/generate_colonel_claw_png.py
+make ai_defconfig          # Load AI-enabled config
+make -j$(nproc)            # Build kernel + modules
+```
+Build the userspace tools (inside an Alpine/musl environment) and generate the ISO:
+```bash
+make -C tools/aicore install-rootfs CC=musl-gcc
+make -C tools/dte install-rootfs CC=musl-gcc
+make INITRAMFS_SOURCE=rootfs isoimage -j$(nproc)
+# Output: arch/x86/boot/image.iso
 ```
 
-Then you can download/use the file at `assets/colonel-claw.png` locally or upload it via your repo UI release/assets flow.
+### 2. Alpine APK Packages
+We provide a Dual-Target Environment (DTE) that works natively on Alpine:
+```bash
+cd packaging/scripts
+./build_apk_repo.sh        # Builds and signs APKs
+./build_iso.sh             # Builds bootable Alpine ISO
+```
 
-![Colonel Claw mascot](assets/colonel-claw.png)
+### 3. Android App (Active Development Target)
+Build the Android VoiceOS launcher using Gradle (requires Java 17):
+```bash
+cd ui/vos/android-gradle
+./gradlew assembleDebug
+# Output: app/build/outputs/apk/debug/app-debug.apk
+```
 
-### Terminal ASCII mascot (derived from the PNG style)
+## 💬 Operator-in-the-Loop
+
+Safety and transparency are critical. Kernal Claw features human override and approval patterns for high-impact changes, providing explainable action trails for trust and postmortem analysis. Tools execute using provider-specific structured calling (e.g., Anthropic `tool_use`, OpenAI `function_calling`, Ollama XML prompts).
+
+## 🦀 Meet the Mascot
+Colonel Claw is our crab mascot — a playful **Kernel/Colonel** pun, with claws that match the name!
 
 ```text
             __     __
