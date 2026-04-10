@@ -682,13 +682,20 @@ function daysBadge(days) {
 
 async function openPeoplePanel() {
   showPanel('people');
-  if (!crmLoaded) await loadPeoplePanel();
+  if (crmLoaded) return;                  // already populated — panel shows instantly
+  if (crmAllContacts.length > 0) {        // stale cache: render immediately, refresh in bg
+    peopleList.innerHTML = '';
+    crmAllContacts.forEach(c => peopleList.appendChild(buildPersonCard(c)));
+    loadPeoplePanel();                    // non-awaited background refresh
+  } else {
+    await loadPeoplePanel();              // true first load — wait for it
+  }
 }
 
 async function loadPeoplePanel() {
-  peopleList.innerHTML = '';
-  peopleEmpty.style.display = 'none';
+  // Don't clear the list until data arrives — keeps existing cards visible during refresh
   expandedCard = null;
+  peopleEmpty.style.display = 'none';
 
   let data = null;
   try {
@@ -701,6 +708,8 @@ async function loadPeoplePanel() {
     return;
   }
 
+  // Clear and repopulate only once data is ready
+  peopleList.innerHTML = '';
   const contacts = data?.contacts ?? [];
   crmAllContacts = contacts;
 

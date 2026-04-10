@@ -543,12 +543,73 @@ class VoiceOSServer(
 
     // ── CRM HTTP handlers ─────────────────────────────────────────
 
+    /**
+     * Pre-build a map of phone-number-suffix → latest contact epoch-ms from call log + SMS.
+     * Two queries instead of 2-per-contact, making handleCrmContacts O(1) in DB round-trips.
+     */
+    private fun buildLastContactMap(): Map<String, Long> {
+        val map = mutableMapOf<String, Long>()
+        try {
+            context.contentResolver.query(
+                android.provider.CallLog.Calls.CONTENT_URI,
+                arrayOf(android.provider.CallLog.Calls.NUMBER, android.provider.CallLog.Calls.DATE),
+                null, null, "${android.provider.CallLog.Calls.DATE} DESC"
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val num = c.getString(0) ?: ""
+                    if (num.isBlank()) continue
+                    val suffix = num.takeLast(9)
+                    if (suffix !in map) map[suffix] = c.getLong(1)
+                }
+            }
+        } catch (_: Exception) {}
+        try {
+            context.contentResolver.query(
+                android.net.Uri.parse("content://sms"),
+                arrayOf("address", "date"),
+                null, null, "date DESC"
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val addr = c.getString(0) ?: ""
+                    if (addr.isBlank()) continue
+                    val suffix = addr.takeLast(9)
+                    val date = c.getLong(1)
+                    map[suffix] = maxOf(map[suffix] ?: 0L, date)
+                }
+            }
+        } catch (_: Exception) {}
+        return map
+    }
+
+    /** Reverse-lookup: phone number → display name from contacts, used by import. */
+    private fun resolveNumberToDisplayName(number: String): String? {
+        return try {
+            val uri = ContactsContract.PhoneLookup.CONTENT_FILTER_URI.buildUpon()
+                .appendPath(android.net.Uri.encode(number)).build()
+            context.contentResolver.query(
+                uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null
+            )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        } catch (_: Exception) { null }
+    }
+
     /** Build the full contact record map used in API responses */
-    private fun buildContactRecord(key: String, entry: MutableMap<String, Any>): Map<String, Any> {
+    private fun buildContactRecord(
+        key: String,
+        entry: MutableMap<String, Any>,
+        lastContactMs: Map<String, Long>? = null
+    ): Map<String, Any> {
         val displayName = (entry["displayName"] as? String)?.takeIf { it.isNotBlank() }
             ?: key.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.titlecase() } }
         val phone    = (entry["phone"] as? String) ?: resolveContact(displayName) ?: resolveContact(key) ?: ""
-        val days     = if (phone.isNotBlank()) daysSinceLastContactByNumber(phone) else null
+        val days     = if (phone.isNotBlank()) {
+            if (lastContactMs != null) {
+                val suffix = phone.takeLast(9)
+                val latest = lastContactMs[suffix] ?: 0L
+                if (latest > 0L) ((System.currentTimeMillis() - latest) / 86_400_000L).toInt() else null
+            } else {
+                daysSinceLastContactByNumber(phone)
+            }
+        } else null
         // Split notes into a list of {ts, text} objects for the UI
         val notesRaw = entry["notes"] as? String ?: ""
         val noteLines = if (notesRaw.isBlank()) emptyList<Map<String, String>>()
@@ -603,7 +664,9 @@ class VoiceOSServer(
         val typeFilter = session.parameters["type"]?.firstOrNull()?.takeIf { it.isNotBlank() && it != "all" }
         val search     = session.parameters["q"]?.firstOrNull()?.lowercase()?.trim()
         val rel        = loadRelationships()
-        var contacts   = rel.map { (key, entry) -> buildContactRecord(key, entry) }
+        // Single pre-fetch of all call+SMS dates (2 queries total instead of 2 per contact)
+        val lastContactMs = buildLastContactMap()
+        var contacts   = rel.map { (key, entry) -> buildContactRecord(key, entry, lastContactMs) }
         if (!typeFilter.isNullOrBlank()) contacts = contacts.filter {
             (it["type"] as? String)?.equals(typeFilter, ignoreCase = true) == true
         }
@@ -614,11 +677,14 @@ class VoiceOSServer(
         contacts = contacts.sortedWith(compareByDescending<Map<String, Any>> {
             val d = it["daysSince"] as? Int ?: -1; if (d >= 0) d else Int.MIN_VALUE
         })
-        // Stats
+        // needsAttention: use already-computed daysSince from the full (unfiltered) contact set
         val needsAttention = rel.count { (key, entry) ->
-            val p = entry["phone"] as? String ?: resolveContact(key.replaceFirstChar { c -> c.titlecase() }) ?: ""
-            val d = if (p.isNotBlank()) daysSinceLastContactByNumber(p) else null
-            d != null && d >= 14
+            val phone = (entry["phone"] as? String)?.takeIf { it.isNotBlank() }
+                ?: resolveContact(key.replaceFirstChar { c -> c.titlecase() }) ?: ""
+            if (phone.isBlank()) return@count false
+            val latest = lastContactMs[phone.takeLast(9)] ?: 0L
+            if (latest == 0L) return@count false
+            ((System.currentTimeMillis() - latest) / 86_400_000L).toInt() >= 14
         }
         return jsonResponse(mapOf("contacts" to contacts, "total" to rel.size, "needsAttention" to needsAttention))
     }
@@ -659,11 +725,14 @@ class VoiceOSServer(
         return jsonResponse(mapOf("ok" to true))
     }
 
-    /** Bulk-import all device contacts into the CRM store (non-destructive — skips existing) */
+    /** Bulk-import device contacts (phone book + SMS threads) into the CRM store (non-destructive). */
     private fun handleCrmImport(): Response {
-        val rel     = loadRelationships()
+        val rel  = loadRelationships()
         var added   = 0
         var skipped = 0
+        val seen = mutableSetOf<String>()   // keys touched this pass (avoids dupes across sources)
+
+        // ── 1. Phone book contacts ────────────────────────────────
         try {
             context.contentResolver.query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
@@ -672,7 +741,6 @@ class VoiceOSServer(
                 null, null,
                 ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
             )?.use { cur ->
-                val seen = mutableSetOf<String>()
                 while (cur.moveToNext()) {
                     val dName  = cur.getString(0)?.trim()?.takeIf { it.isNotBlank() } ?: continue
                     val number = cur.getString(1)?.trim() ?: ""
@@ -693,6 +761,37 @@ class VoiceOSServer(
         } catch (e: Exception) {
             return jsonResponse(mapOf("error" to "Import failed: ${e.message}"), Status.INTERNAL_ERROR)
         }
+
+        // ── 2. SMS thread contacts (catches texters not saved in phone book) ──
+        try {
+            val seenNums = mutableSetOf<String>()
+            context.contentResolver.query(
+                android.net.Uri.parse("content://sms"),
+                arrayOf("address"),
+                null, null, "date DESC"
+            )?.use { cur ->
+                while (cur.moveToNext()) {
+                    val address = cur.getString(0)?.trim()?.takeIf { it.isNotBlank() } ?: continue
+                    val suffix  = address.takeLast(9)
+                    if (suffix in seenNums) continue; seenNums += suffix
+                    // Resolve number → saved contact name (skip unknown numbers)
+                    val dName = resolveNumberToDisplayName(address) ?: continue
+                    val key = dName.lowercase()
+                    if (key in seen || key in rel) { skipped++; continue }
+                    seen += key
+                    rel[key] = mutableMapOf(
+                        "displayName"      to dName,
+                        "phone"            to address,
+                        "type"             to "",
+                        "tags"             to emptyList<String>(),
+                        "notes"            to "",
+                        "interactionCount" to 0.0
+                    )
+                    added++
+                }
+            }
+        } catch (_: Exception) {}
+
         saveRelationships(rel)
         return jsonResponse(mapOf("ok" to true, "added" to added, "skipped" to skipped, "total" to rel.size))
     }
