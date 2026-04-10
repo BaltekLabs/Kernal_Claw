@@ -1,6 +1,6 @@
 # Kernal Claw 🦀
 
-![Colonel Claw mascot](/scripts/colonel_claw.png)
+![Colonel Claw mascot](/scripts/assets/colonel_claw.png)
 
 > **Note:** The repository name currently says `Kernal_Claw`; this will be corrected to `Kernel_Claw`.
 
