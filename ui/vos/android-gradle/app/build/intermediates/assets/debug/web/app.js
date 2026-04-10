@@ -231,6 +231,9 @@ function showToolBadge(toolName) {
     create_event: '📅', set_alarm: '⏰', get_battery: '🔋',
     get_volume: '🔊', set_volume: '🔊', remember: '💾', recall: '💾',
     call_contact: '📞', send_sms: '💬', navigate: '🗺️',
+    get_contact_profile: '🤝', add_relationship_note: '📝',
+    log_interaction: '✅', get_relationship_health: '💚',
+    suggest_social_outreach: '💌',
   };
   badge.textContent = `${icons[toolName] || '⚙️'} ${toolName.replace(/_/g, ' ')}`;
   responseScroll.insertBefore(badge, responseText);
@@ -370,9 +373,9 @@ async function fetchContacts(name) {
   } catch { return []; }
 }
 
-async function post(url, body) {
+async function post(url, body, method = 'POST') {
   return fetch(url, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(r => r.json()).catch(() => ({}));
@@ -517,6 +520,11 @@ function updateStatusBar(data) {
 function setCircleState(state) { circle.setState(state); }
 
 // ── Panel management ─────────────────────────────────────────────
+const peoplePanel  = document.getElementById('people-panel');
+const peopleClose  = document.getElementById('people-close');
+const peopleList   = document.getElementById('people-list');
+const peopleEmpty  = document.getElementById('people-empty');
+
 const PANELS = {
   input:    inputPanel,
   response: responsePanel,
@@ -524,6 +532,7 @@ const PANELS = {
   drawer:   appDrawer,
   history:  historyPanel,
   queue:    queuePanel,
+  people:   peoplePanel,
 };
 
 function showPanel(name) {
@@ -565,7 +574,7 @@ function closePanel(name, resetActive = true) {
 }
 
 function closeAllPanels() {
-  ['input', 'settings', 'drawer', 'history', 'queue'].forEach(k => closePanel(k, false));
+  ['input', 'settings', 'drawer', 'history', 'queue', 'people'].forEach(k => closePanel(k, false));
   hideSuggestions();
   activePanel = currentResponse ? 'response' : null;
   if (!isProcessing) setCircleState(CircleState.IDLE);
@@ -633,6 +642,330 @@ function renderHistory() {
     historyList.appendChild(el);
   });
 }
+
+// ── People / Social CRM panel ────────────────────────────────────
+
+const peopleImportBtn   = document.getElementById('people-import-btn');
+const peopleStatTotal   = document.getElementById('people-stat-total');
+const peopleStatAttn    = document.getElementById('people-stat-attention');
+const peopleSearch      = document.getElementById('people-search');
+const peopleFilterChips = document.querySelectorAll('.pf-chip');
+
+let crmActiveType  = 'all';
+let crmAllContacts = [];    // full list from last load
+let expandedCard   = null;  // DOM element of currently expanded card
+let crmLoaded      = false; // true after first successful load; false again after import
+
+// Avatar colour palette
+const AVATAR_COLORS = [
+  '#2a6fdb','#c4413c','#27843f','#925abc','#b86e00',
+  '#1a8a8a','#c44c7e','#5d6cc0','#4a7c59','#7c5d4a'
+];
+function avatarColor(name) {
+  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+function avatarInitials(name) {
+  const parts = name.trim().split(/\s+/);
+  return parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.slice(0, 2).toUpperCase();
+}
+
+function daysBadge(days) {
+  if (days < 0)  return { cls: 'none',  label: 'no history' };
+  if (days === 0) return { cls: 'fresh', label: 'today' };
+  if (days <= 10) return { cls: 'fresh', label: `${days}d ago` };
+  if (days <= 30) return { cls: 'warm',  label: `${days}d ago` };
+  return               { cls: 'cold',  label: `${days}d ago` };
+}
+
+async function openPeoplePanel() {
+  showPanel('people');
+  if (!crmLoaded) await loadPeoplePanel();
+}
+
+async function loadPeoplePanel() {
+  peopleList.innerHTML = '';
+  peopleEmpty.style.display = 'none';
+  expandedCard = null;
+
+  let data = null;
+  try {
+    const params = new URLSearchParams({ type: crmActiveType });
+    const q = peopleSearch.value.trim();
+    if (q) params.set('q', q);
+    data = await fetch('/api/crm/contacts?' + params).then(r => r.json());
+  } catch (e) {
+    console.error('CRM load failed', e);
+    return;
+  }
+
+  const contacts = data?.contacts ?? [];
+  crmAllContacts = contacts;
+
+  peopleStatTotal.textContent = `${data?.total ?? 0} contacts`;
+  const attn = data?.needsAttention ?? 0;
+  peopleStatAttn.textContent = attn > 0 ? `· ${attn} need attention` : '';
+
+  crmLoaded = true;
+
+  if (contacts.length === 0) {
+    peopleEmpty.style.display = '';
+    return;
+  }
+  contacts.forEach(c => peopleList.appendChild(buildPersonCard(c)));
+}
+
+function buildPersonCard(contact) {
+  const card = document.createElement('div');
+  card.className = 'person-card';
+
+  const { cls: daysCls, label: daysLabel } = daysBadge(contact.daysSince ?? -1);
+  const initials  = avatarInitials(contact.name);
+  const avatarBg  = avatarColor(contact.name);
+  const typeStr   = contact.type || '';
+  const tags      = contact.tags || [];
+  const notes     = contact.notes || [];         // [{ts, text}]
+  const noteCount = notes.length;
+  const lastNote  = notes[noteCount - 1];
+
+  // Build type tag HTML
+  const typeHtml = typeStr
+    ? `<span class="person-type-tag ${typeStr.toLowerCase()}">${escHtml(typeStr)}</span>`
+    : '';
+  // Extra tags (first 2)
+  const extraTagsHtml = tags.slice(0, 2).map(t => `<span class="person-extra-tag">${escHtml(t)}</span>`).join('');
+  // Phone small
+  const phoneHtml = contact.phone
+    ? `<span class="person-phone-small">${escHtml(contact.phone)}</span>`
+    : '';
+
+  card.innerHTML = `
+    <div class="person-card-top">
+      <div class="person-avatar" style="background:${avatarBg}">${initials}</div>
+      <div class="person-card-info">
+        <div class="person-card-row1">
+          <span class="person-name">${escHtml(contact.name)}</span>
+          <span class="person-days ${daysCls}">${daysLabel}</span>
+        </div>
+        <div class="person-card-row2">
+          ${typeHtml}${extraTagsHtml}
+          ${!typeStr && !tags.length ? phoneHtml : ''}
+          ${noteCount > 0 ? `<span class="person-extra-tag">📝 ${noteCount}</span>` : ''}
+          <span class="person-expand-chevron">▾</span>
+        </div>
+      </div>
+    </div>
+    ${lastNote ? `<div class="person-note-preview">${escHtml(lastNote.text)}</div>` : ''}
+    <div class="person-quick-actions">
+      <button class="pqa-btn" data-qa="call">📞 Call</button>
+      <button class="pqa-btn" data-qa="text">💬 Text</button>
+      <button class="pqa-btn" data-qa="agent">🤖 Agent</button>
+      <button class="pqa-btn danger" data-qa="remove">✕</button>
+    </div>
+    <div class="person-detail">
+      <div class="person-detail-label">Relationship</div>
+      <div class="person-type-picker">
+        ${['friend','family','work','mentor','acquaintance','other'].map(t =>
+          `<button class="ptp-btn${typeStr===t?' active':''}" data-rtype="${t}">${t}</button>`
+        ).join('')}
+      </div>
+
+      <div class="person-detail-label">Tags</div>
+      <div class="person-tags-row" data-tagrow>
+        ${tags.map(t => `
+          <span class="person-tag-pill">
+            ${escHtml(t)}
+            <button class="person-tag-remove" data-removetag="${escHtml(t)}">×</button>
+          </span>`).join('')}
+        <input class="person-tag-input" placeholder="+ add tag" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      </div>
+
+      <div class="person-detail-label">Notes${noteCount > 0 ? ` (${noteCount})` : ''}</div>
+      <div class="person-notes-list">
+        ${notes.length === 0
+          ? '<div style="color:var(--text-dim);font-size:12px;padding:4px 0">No notes yet.</div>'
+          : notes.map(n => `
+            <div class="person-note-entry">
+              ${n.ts ? `<div class="person-note-ts">${escHtml(n.ts)}</div>` : ''}
+              <div class="person-note-text">${escHtml(n.text)}</div>
+            </div>`).join('')
+        }
+      </div>
+      <div class="person-note-add">
+        <textarea class="person-note-textarea" placeholder="Add a note…" rows="2"></textarea>
+        <button class="person-note-save" disabled>Save</button>
+      </div>
+    </div>
+  `;
+
+  // ── Top row tap → expand/collapse
+  card.querySelector('.person-card-top').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (expandedCard && expandedCard !== card) {
+      expandedCard.classList.remove('expanded');
+    }
+    card.classList.toggle('expanded');
+    expandedCard = card.classList.contains('expanded') ? card : null;
+  });
+
+  // ── Quick actions
+  card.querySelector('[data-qa="call"]').addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel('people');
+    if (contact.phone) { post('/api/call', { number: contact.phone }); showFeedback(`Calling ${contact.name}…`); }
+    else sendMessage(`Call ${contact.name}`);
+  });
+  card.querySelector('[data-qa="text"]').addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel('people');
+    if (contact.phone) { post('/api/sms', { number: contact.phone }); }
+    else sendMessage(`Text ${contact.name}`);
+  });
+  card.querySelector('[data-qa="agent"]').addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel('people');
+    sendMessage(`Pull up the full profile for ${contact.name} and help me reach out`);
+  });
+  card.querySelector('[data-qa="remove"]').addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!confirm(`Remove ${contact.name} from People?`)) return;
+    await post('/api/crm/contact', { name: contact.key || contact.name }, 'DELETE');
+    await loadPeoplePanel();
+  });
+
+  // ── Relationship type picker
+  card.querySelectorAll('.ptp-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const type = btn.dataset.rtype;
+      card.querySelectorAll('.ptp-btn').forEach(b => b.classList.toggle('active', b === btn));
+      await post('/api/crm/contact', { name: contact.key || contact.name, type }, 'PUT');
+      contact.type = type;
+      // Update badge in top row
+      const row2 = card.querySelector('.person-card-row2');
+      const existing = row2.querySelector('.person-type-tag');
+      if (existing) existing.remove();
+      const newTag = document.createElement('span');
+      newTag.className = `person-type-tag ${type}`;
+      newTag.textContent = type;
+      row2.insertBefore(newTag, row2.firstChild);
+    });
+  });
+
+  // ── Tags
+  const tagRow = card.querySelector('[data-tagrow]');
+  const tagInput = card.querySelector('.person-tag-input');
+  tagInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+  tagInput.addEventListener('keydown', async e => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      const tag = tagInput.value.trim().replace(/,/g,'');
+      if (!tag || tags.includes(tag)) { tagInput.value = ''; return; }
+      tags.push(tag);
+      tagInput.value = '';
+      await post('/api/crm/contact', { name: contact.key || contact.name, tags }, 'PUT');
+      // Add pill before input
+      const pill = document.createElement('span');
+      pill.className = 'person-tag-pill';
+      pill.innerHTML = `${escHtml(tag)}<button class="person-tag-remove" data-removetag="${escHtml(tag)}">×</button>`;
+      pill.querySelector('.person-tag-remove').addEventListener('click', async ev => {
+        ev.stopPropagation();
+        const idx = tags.indexOf(tag); if (idx >= 0) tags.splice(idx, 1);
+        pill.remove();
+        await post('/api/crm/contact', { name: contact.key || contact.name, tags }, 'PUT');
+      });
+      tagRow.insertBefore(pill, tagInput);
+    }
+  });
+  // Remove existing tag pills
+  card.querySelectorAll('.person-tag-remove').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const tag = btn.dataset.removetag;
+      const idx = tags.indexOf(tag); if (idx >= 0) tags.splice(idx, 1);
+      btn.closest('.person-tag-pill').remove();
+      await post('/api/crm/contact', { name: contact.key || contact.name, tags }, 'PUT');
+    });
+  });
+
+  // ── Note textarea enable save
+  const noteTA   = card.querySelector('.person-note-textarea');
+  const noteSave = card.querySelector('.person-note-save');
+  noteTA.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+  noteTA.addEventListener('input', () => {
+    noteSave.disabled = !noteTA.value.trim();
+  });
+  noteSave.addEventListener('click', async e => {
+    e.stopPropagation();
+    const text = noteTA.value.trim();
+    if (!text) return;
+    noteSave.disabled = true;
+    await post('/api/crm/note', { name: contact.key || contact.name, note: text });
+    noteTA.value = '';
+    // Append note to timeline immediately
+    const noteList = card.querySelector('.person-notes-list');
+    const ts = new Date().toLocaleDateString('en-US', { month:'2-digit', day:'2-digit', year:'2-digit' });
+    const entry = document.createElement('div');
+    entry.className = 'person-note-entry';
+    entry.innerHTML = `<div class="person-note-ts">${ts}</div><div class="person-note-text">${escHtml(text)}</div>`;
+    const placeholder = noteList.querySelector('div[style]');
+    if (placeholder) placeholder.remove();
+    noteList.appendChild(entry);
+    noteList.scrollTop = noteList.scrollHeight;
+    // Update preview line
+    const preview = card.querySelector('.person-note-preview');
+    if (preview) preview.textContent = text;
+  });
+
+  return card;
+}
+
+// Filter chip click
+peopleFilterChips.forEach(chip => {
+  chip.addEventListener('click', async () => {
+    crmActiveType = chip.dataset.type;
+    peopleFilterChips.forEach(c => c.classList.toggle('active', c === chip));
+    await loadPeoplePanel();
+  });
+  chip.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+});
+
+// Search debounce
+let searchDebounce = null;
+peopleSearch.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(loadPeoplePanel, 300);
+});
+peopleSearch.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Import button
+peopleImportBtn.addEventListener('click', async () => {
+  peopleImportBtn.classList.add('loading');
+  peopleImportBtn.textContent = 'Importing…';
+  try {
+    const result = await post('/api/crm/import', {});
+    const msg = `Imported ${result.added} contacts (${result.skipped} already tracked)`;
+    showFeedback(msg);
+    crmLoaded = false;
+    await loadPeoplePanel();
+  } catch (e) {
+    showFeedback('Import failed');
+  } finally {
+    peopleImportBtn.classList.remove('loading');
+    peopleImportBtn.textContent = 'Import';
+  }
+});
+peopleImportBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Absorb all touches inside the panel so the gesture engine never sees them.
+// Without this, Android WebView doesn't synthesize click events for div elements
+// when touch-action:none is set on the body.
+peoplePanel.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Close button
+peopleClose.addEventListener('click', () => closePanel('people'));
 
 // ── Settings ─────────────────────────────────────────────────────
 const CLOUD_PROVIDERS = ['anthropic', 'openai', 'groq'];
@@ -797,7 +1130,7 @@ const SWIPE_MAX_PERP = 80;
 const LONG_PRESS_MS  = 500;
 
 function isScrollableTarget(el) {
-  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl];
+  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl, peoplePanel];
   return panels.some(p => p.contains(el));
 }
 
@@ -851,8 +1184,12 @@ function onTap(x, y) {
     setCircleState(CircleState.IDLE); lastTap = 0; return;
   }
   lastTap = now;
-  if (activePanel && activePanel !== 'response') {
+  if (activePanel && activePanel !== 'response' && activePanel !== 'people') {
     closeAllPanels();
+  } else if (activePanel === 'people') {
+    // Taps inside the people panel are absorbed by the panel's own touchstart listener;
+    // this branch only fires if somehow a tap outside the panel reaches onTap while it's open.
+    closePanel('people');
   } else {
     // Open input in voice mode and auto-start voice
     showPanel('input');
@@ -874,8 +1211,10 @@ function onSwipeDown() {
 }
 
 function onSwipeLeft()  {
+  if (activePanel === 'people') { closePanel('people'); return; }
   if (activePanel === 'history') { closePanel('history'); return; }
   closeAllPanels();
+  openPeoplePanel();
 }
 
 function onSwipeRight() {

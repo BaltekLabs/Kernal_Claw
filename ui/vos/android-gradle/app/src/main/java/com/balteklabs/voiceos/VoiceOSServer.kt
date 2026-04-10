@@ -256,6 +256,35 @@ class VoiceOSServer(
             mapOf("note" to mapOf("type" to "string", "description" to "The information to store")),
             listOf("note")),
 
+        // ── Social CRM ────────────────────────────────────────────
+        ToolDef("get_contact_profile",
+            "Get a full social profile for a contact: relationship notes, interaction history, call/SMS recency",
+            mapOf("name" to mapOf("type" to "string", "description" to "Contact name")),
+            listOf("name")),
+        ToolDef("add_relationship_note",
+            "Save a note about a person — what you talked about, how they're doing, context for next time",
+            mapOf(
+                "name" to mapOf("type" to "string", "description" to "Contact name"),
+                "note" to mapOf("type" to "string", "description" to "Note to save"),
+                "type" to mapOf("type" to "string", "description" to "Relationship type (friend, family, colleague, mentor, etc.) — optional")
+            ), listOf("name", "note")),
+        ToolDef("log_interaction",
+            "Log that you had an interaction with someone (call, coffee, meeting, etc.) with a brief summary",
+            mapOf(
+                "name"    to mapOf("type" to "string", "description" to "Contact name"),
+                "summary" to mapOf("type" to "string", "description" to "Brief summary of the interaction")
+            ), listOf("name", "summary")),
+        ToolDef("get_relationship_health",
+            "Show relationship health — who you haven't spoken to in a while and for how long",
+            mapOf(
+                "limit"           to mapOf("type" to "integer", "description" to "Max contacts to return (default 10)"),
+                "min_days_since"  to mapOf("type" to "integer", "description" to "Only show contacts not contacted in at least this many days (default 0)")
+            ), emptyList()),
+        ToolDef("suggest_social_outreach",
+            "Suggest who you should reach out to based on relationship drift and interaction patterns",
+            mapOf("threshold_days" to mapOf("type" to "integer", "description" to "Days of silence before flagging (default 21)")),
+            emptyList()),
+
         // ── Communication (queued — require approval) ─────────────
         ToolDef("call_contact",
             "Open the phone dialer to call a contact or number",
@@ -285,6 +314,401 @@ class VoiceOSServer(
             mapOf("destination" to mapOf("type" to "string", "description" to "Destination address or place name")),
             listOf("destination"), requiresConfirm = true)
     )
+
+    // ════════════════════════════════════════════════════════════════
+    // Social CRM — SharedPrefs-backed relationship layer
+    // ════════════════════════════════════════════════════════════════
+
+    /** Load the relationship map: contactName -> {type, notes, lastSeen, interactionCount} */
+    private fun loadRelationships(): MutableMap<String, MutableMap<String, Any>> {
+        val json = prefs.getString("crm_relationships", "{}") ?: "{}"
+        return try {
+            @Suppress("UNCHECKED_CAST")
+            (gson.fromJson(json, Map::class.java) as Map<String, Map<String, Any>>)
+                .mapValues { it.value.toMutableMap() }.toMutableMap()
+        } catch (_: Exception) { mutableMapOf() }
+    }
+
+    private fun saveRelationships(rel: Map<String, Map<String, Any>>) {
+        prefs.edit().putString("crm_relationships", gson.toJson(rel)).apply()
+    }
+
+    /** Compute days since last device interaction (call or SMS) for a name. */
+    private fun daysSinceLastDeviceContact(name: String): Int? {
+        val number = resolveContact(name) ?: return null
+        return daysSinceLastContactByNumber(number)
+    }
+
+    /** Build a rich contact profile for the agent */
+    private fun toolGetContactProfile(args: Map<String, Any>): String {
+        val name = args["name"] as? String ?: return "Missing name"
+        val rel  = loadRelationships()
+        val meta = rel[name.lowercase()] ?: emptyMap<String, Any>()
+
+        val sb = StringBuilder("=== $name ===\n")
+
+        // Basic info from device contacts
+        val number = resolveContact(name)
+        if (number != null) sb.appendLine("Phone: $number")
+        (meta["type"] as? String)?.let { sb.appendLine("Relationship: $it") }
+
+        // Last interaction from device
+        val daysSince = daysSinceLastDeviceContact(name)
+        if (daysSince != null) sb.appendLine("Last device contact: ${daysSince}d ago")
+        else (meta["lastSeen"] as? String)?.let { sb.appendLine("Last seen: $it") }
+
+        // Interaction count
+        (meta["interactionCount"] as? Double)?.toInt()?.let { sb.appendLine("Logged interactions: $it") }
+
+        // Relationship notes
+        val notes = meta["notes"] as? String ?: ""
+        if (notes.isNotBlank()) sb.appendLine("\nNotes:\n$notes")
+
+        // Recent call log
+        try {
+            val cur = context.contentResolver.query(
+                android.provider.CallLog.Calls.CONTENT_URI,
+                arrayOf(android.provider.CallLog.Calls.TYPE, android.provider.CallLog.Calls.DATE, android.provider.CallLog.Calls.DURATION),
+                "${android.provider.CallLog.Calls.NUMBER} LIKE ?",
+                arrayOf("%${(number ?: "").takeLast(9)}%"),
+                "${android.provider.CallLog.Calls.DATE} DESC"
+            )
+            val calls = mutableListOf<String>()
+            cur?.use { c ->
+                while (c.moveToNext() && calls.size < 3) {
+                    val type = when (c.getInt(0)) {
+                        android.provider.CallLog.Calls.INCOMING_TYPE -> "in"
+                        android.provider.CallLog.Calls.OUTGOING_TYPE -> "out"
+                        else                                          -> "missed"
+                    }
+                    val age  = (System.currentTimeMillis() - c.getLong(1)) / 86_400_000L
+                    val dur  = c.getLong(2)
+                    calls += "[$type, ${age}d ago${if (dur > 0) ", ${dur}s" else ""}]"
+                }
+            }
+            if (calls.isNotEmpty()) sb.appendLine("\nRecent calls: ${calls.joinToString(" ")}")
+        } catch (_: Exception) {}
+
+        // Recent SMS
+        try {
+            val cur = context.contentResolver.query(
+                android.net.Uri.parse("content://sms"),
+                arrayOf("body", "date", "type"),
+                "address LIKE ?",
+                arrayOf("%${(number ?: "").takeLast(9)}%"),
+                "date DESC"
+            )
+            val msgs = mutableListOf<String>()
+            cur?.use { c ->
+                while (c.moveToNext() && msgs.size < 2) {
+                    val dir  = if (c.getInt(2) == 1) "them" else "you"
+                    val age  = (System.currentTimeMillis() - c.getLong(1)) / 86_400_000L
+                    msgs += "[${age}d ago, from $dir] ${c.getString(0)?.take(80) ?: ""}"
+                }
+            }
+            if (msgs.isNotEmpty()) sb.appendLine("\nRecent SMS:\n${msgs.joinToString("\n")}")
+        } catch (_: Exception) {}
+
+        return sb.toString().trim()
+    }
+
+    private fun toolAddRelationshipNote(args: Map<String, Any>): String {
+        val name = args["name"] as? String ?: return "Missing name"
+        val note = args["note"] as? String ?: return "Missing note"
+        val type = args["type"] as? String  // optional relationship type update
+        val rel  = loadRelationships()
+        val key  = name.lowercase()
+        val entry = rel.getOrPut(key) { mutableMapOf("notes" to "", "interactionCount" to 0.0) }.toMutableMap()
+        val ts   = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US).format(java.util.Date())
+        val prev = entry["notes"] as? String ?: ""
+        entry["notes"] = if (prev.isBlank()) "[$ts] $note" else "$prev\n[$ts] $note"
+        if (!type.isNullOrBlank()) entry["type"] = type
+        rel[key] = entry
+        saveRelationships(rel)
+        return "Note saved for $name"
+    }
+
+    private fun toolLogInteraction(args: Map<String, Any>): String {
+        val name    = args["name"]    as? String ?: return "Missing name"
+        val summary = args["summary"] as? String ?: return "Missing summary"
+        val rel     = loadRelationships()
+        val key     = name.lowercase()
+        val entry   = rel.getOrPut(key) { mutableMapOf("notes" to "", "interactionCount" to 0.0) }.toMutableMap()
+        val ts      = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US).format(java.util.Date())
+        val prev    = entry["notes"] as? String ?: ""
+        entry["notes"]            = if (prev.isBlank()) "[$ts] ✓ $summary" else "$prev\n[$ts] ✓ $summary"
+        entry["lastSeen"]         = ts
+        entry["interactionCount"] = ((entry["interactionCount"] as? Double ?: 0.0) + 1.0)
+        rel[key] = entry
+        saveRelationships(rel)
+        return "Interaction logged with $name: $summary"
+    }
+
+    private fun toolGetRelationshipHealth(args: Map<String, Any>): String {
+        val limit    = (args["limit"] as? Double)?.toInt() ?: 10
+        val minDays  = (args["min_days_since"] as? Double)?.toInt() ?: 0
+        val rel      = loadRelationships()
+
+        data class Health(val name: String, val daysSince: Int?, val type: String?, val lastSeen: String?)
+
+        // Gather all tracked + recently called contacts
+        val tracked = rel.keys.map { key ->
+            val entry = rel[key]!!
+            val displayName = key.replaceFirstChar { it.titlecase() }
+            val days = daysSinceLastDeviceContact(displayName) ?: daysSinceLastDeviceContact(key)
+            Health(displayName, days, entry["type"] as? String, entry["lastSeen"] as? String)
+        }
+        // Also include top call log contacts not yet tracked
+        val callContacts = mutableListOf<Health>()
+        try {
+            context.contentResolver.query(
+                android.provider.CallLog.Calls.CONTENT_URI,
+                arrayOf(android.provider.CallLog.Calls.CACHED_NAME, android.provider.CallLog.Calls.NUMBER, android.provider.CallLog.Calls.DATE),
+                null, null, "${android.provider.CallLog.Calls.DATE} DESC"
+            )?.use { c ->
+                val seen = mutableSetOf<String>()
+                while (c.moveToNext() && callContacts.size < 20) {
+                    val cName = c.getString(0)?.takeIf { it.isNotBlank() } ?: continue
+                    if (cName.lowercase() in rel || cName.lowercase() in seen) continue
+                    seen += cName.lowercase()
+                    val days = ((System.currentTimeMillis() - c.getLong(2)) / 86_400_000L).toInt()
+                    callContacts += Health(cName, days, null, null)
+                }
+            }
+        } catch (_: Exception) {}
+
+        val all = (tracked + callContacts)
+            .filter { it.daysSince != null && it.daysSince >= minDays }
+            .sortedByDescending { it.daysSince ?: 0 }
+            .take(limit)
+
+        if (all.isEmpty()) return "All tracked contacts are recently in touch."
+        return "Relationship health (days since contact):\n" + all.joinToString("\n") { h ->
+            val days = if (h.daysSince != null) "${h.daysSince}d ago" else "unknown"
+            "• ${h.name}${if (h.type != null) " [${h.type}]" else ""} — $days"
+        }
+    }
+
+    private fun toolSuggestSocialOutreach(args: Map<String, Any>): String {
+        val threshold = (args["threshold_days"] as? Double)?.toInt() ?: 21
+        val rel       = loadRelationships()
+
+        data class Candidate(val name: String, val days: Int, val type: String?, val lastNote: String?)
+
+        val candidates = mutableListOf<Candidate>()
+        // From tracked relationships
+        rel.forEach { (key, entry) ->
+            val displayName = key.replaceFirstChar { it.titlecase() }
+            val days = daysSinceLastDeviceContact(displayName) ?: daysSinceLastDeviceContact(key) ?: return@forEach
+            if (days >= threshold) {
+                val lastNote = (entry["notes"] as? String)?.lines()?.lastOrNull()
+                candidates += Candidate(displayName, days, entry["type"] as? String, lastNote)
+            }
+        }
+        // From call log — frequent contacts who went quiet
+        val callFrequency = mutableMapOf<String, Pair<Int, Long>>() // name -> (count, lastDate)
+        try {
+            context.contentResolver.query(
+                android.provider.CallLog.Calls.CONTENT_URI,
+                arrayOf(android.provider.CallLog.Calls.CACHED_NAME, android.provider.CallLog.Calls.DATE),
+                null, null, "${android.provider.CallLog.Calls.DATE} DESC"
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val cName = c.getString(0)?.takeIf { it.isNotBlank() } ?: continue
+                    val date  = c.getLong(1)
+                    val cur   = callFrequency[cName] ?: Pair(0, 0L)
+                    callFrequency[cName] = Pair(cur.first + 1, maxOf(cur.second, date))
+                }
+            }
+        } catch (_: Exception) {}
+        callFrequency.forEach { (name, pair) ->
+            val (count, lastDate) = pair
+            if (count < 3) return@forEach
+            val days = ((System.currentTimeMillis() - lastDate) / 86_400_000L).toInt()
+            if (days >= threshold && candidates.none { it.name.equals(name, ignoreCase = true) }) {
+                candidates += Candidate(name, days, null, "Frequent contact (${count} calls total)")
+            }
+        }
+
+        if (candidates.isEmpty()) return "Everyone you track is recently in touch. Good job!"
+        val sorted = candidates.sortedByDescending { it.days }.take(5)
+        return "People to reach out to:\n" + sorted.joinToString("\n") { c ->
+            buildString {
+                append("• ${c.name} — ${c.days}d since last contact")
+                c.type?.let { append(" [$it]") }
+                c.lastNote?.let { append("\n  Last note: $it") }
+            }
+        }
+    }
+
+    // ── CRM HTTP handlers ─────────────────────────────────────────
+
+    /** Build the full contact record map used in API responses */
+    private fun buildContactRecord(key: String, entry: MutableMap<String, Any>): Map<String, Any> {
+        val displayName = (entry["displayName"] as? String)?.takeIf { it.isNotBlank() }
+            ?: key.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.titlecase() } }
+        val phone    = (entry["phone"] as? String) ?: resolveContact(displayName) ?: resolveContact(key) ?: ""
+        val days     = if (phone.isNotBlank()) daysSinceLastContactByNumber(phone) else null
+        // Split notes into a list of {ts, text} objects for the UI
+        val notesRaw = entry["notes"] as? String ?: ""
+        val noteLines = if (notesRaw.isBlank()) emptyList<Map<String, String>>()
+        else notesRaw.lines().filter { it.isNotBlank() }.map { line ->
+            val tsMatch = Regex("""^\[(\d{2}/\d{2}/\d{2})] (.*)$""").matchEntire(line.trim())
+            if (tsMatch != null) mapOf("ts" to tsMatch.groupValues[1], "text" to tsMatch.groupValues[2])
+            else mapOf("ts" to "", "text" to line.trim())
+        }
+        @Suppress("UNCHECKED_CAST")
+        val tags = (entry["tags"] as? List<*>)?.filterIsInstance<String>() ?: emptyList<String>()
+        return mapOf(
+            "key"              to key,
+            "name"             to displayName,
+            "phone"            to phone,
+            "type"             to (entry["type"] as? String ?: ""),
+            "tags"             to tags,
+            "daysSince"        to (days ?: -1),
+            "lastSeen"         to (entry["lastSeen"] as? String ?: ""),
+            "notes"            to noteLines,
+            "notesRaw"         to notesRaw,
+            "interactionCount" to ((entry["interactionCount"] as? Double)?.toInt() ?: 0)
+        )
+    }
+
+    /** Days since last call OR SMS using a phone number directly (no name lookup) */
+    private fun daysSinceLastContactByNumber(number: String): Int? {
+        val suffix = number.takeLast(9)
+        var latest = 0L
+        try {
+            context.contentResolver.query(
+                android.provider.CallLog.Calls.CONTENT_URI,
+                arrayOf(android.provider.CallLog.Calls.DATE),
+                "${android.provider.CallLog.Calls.NUMBER} LIKE ?",
+                arrayOf("%$suffix%"),
+                "${android.provider.CallLog.Calls.DATE} DESC"
+            )?.use { c -> if (c.moveToFirst()) latest = maxOf(latest, c.getLong(0)) }
+        } catch (_: Exception) {}
+        try {
+            context.contentResolver.query(
+                android.net.Uri.parse("content://sms"),
+                arrayOf("date"),
+                "address LIKE ?",
+                arrayOf("%$suffix%"),
+                "date DESC"
+            )?.use { c -> if (c.moveToFirst()) latest = maxOf(latest, c.getLong(0)) }
+        } catch (_: Exception) {}
+        if (latest == 0L) return null
+        return ((System.currentTimeMillis() - latest) / 86_400_000L).toInt()
+    }
+
+    private fun handleCrmContacts(session: IHTTPSession): Response {
+        val typeFilter = session.parameters["type"]?.firstOrNull()?.takeIf { it.isNotBlank() && it != "all" }
+        val search     = session.parameters["q"]?.firstOrNull()?.lowercase()?.trim()
+        val rel        = loadRelationships()
+        var contacts   = rel.map { (key, entry) -> buildContactRecord(key, entry) }
+        if (!typeFilter.isNullOrBlank()) contacts = contacts.filter {
+            (it["type"] as? String)?.equals(typeFilter, ignoreCase = true) == true
+        }
+        if (!search.isNullOrBlank()) contacts = contacts.filter {
+            (it["name"] as? String)?.lowercase()?.contains(search) == true ||
+            (it["tags"] as? List<*>)?.any { t -> (t as? String)?.lowercase()?.contains(search) == true } == true
+        }
+        contacts = contacts.sortedWith(compareByDescending<Map<String, Any>> {
+            val d = it["daysSince"] as? Int ?: -1; if (d >= 0) d else Int.MIN_VALUE
+        })
+        // Stats
+        val needsAttention = rel.count { (key, entry) ->
+            val p = entry["phone"] as? String ?: resolveContact(key.replaceFirstChar { c -> c.titlecase() }) ?: ""
+            val d = if (p.isNotBlank()) daysSinceLastContactByNumber(p) else null
+            d != null && d >= 14
+        }
+        return jsonResponse(mapOf("contacts" to contacts, "total" to rel.size, "needsAttention" to needsAttention))
+    }
+
+    private fun handleCrmAddNote(session: IHTTPSession): Response {
+        val body = parseBody(session)
+        val name = body["name"] as? String ?: return jsonResponse(mapOf("error" to "missing name"), Status.BAD_REQUEST)
+        val note = body["note"] as? String ?: return jsonResponse(mapOf("error" to "missing note"), Status.BAD_REQUEST)
+        val type = body["type"] as? String
+        val args = mutableMapOf<String, Any>("name" to name, "note" to note)
+        if (!type.isNullOrBlank()) args["type"] = type
+        val result = toolAddRelationshipNote(args)
+        return jsonResponse(mapOf("ok" to true, "message" to result))
+    }
+
+    private fun handleCrmUpdateContact(session: IHTTPSession): Response {
+        val body = parseBody(session)
+        val name = body["name"] as? String ?: return jsonResponse(mapOf("error" to "missing name"), Status.BAD_REQUEST)
+        val key  = name.lowercase()
+        val rel  = loadRelationships()
+        val entry = rel.getOrPut(key) { mutableMapOf("notes" to "", "interactionCount" to 0.0) }.toMutableMap()
+        (body["type"]        as? String)?.let { entry["type"]        = it }
+        (body["displayName"] as? String)?.let { entry["displayName"] = it }
+        (body["phone"]       as? String)?.let { entry["phone"]       = it }
+        @Suppress("UNCHECKED_CAST")
+        (body["tags"] as? List<*>)?.filterIsInstance<String>()?.let { entry["tags"] = it }
+        rel[key] = entry
+        saveRelationships(rel)
+        return jsonResponse(mapOf("ok" to true, "contact" to buildContactRecord(key, entry)))
+    }
+
+    private fun handleCrmDeleteContact(session: IHTTPSession): Response {
+        val body = parseBody(session)
+        val name = body["name"] as? String ?: return jsonResponse(mapOf("error" to "missing name"), Status.BAD_REQUEST)
+        val rel  = loadRelationships()
+        rel.remove(name.lowercase())
+        saveRelationships(rel)
+        return jsonResponse(mapOf("ok" to true))
+    }
+
+    /** Bulk-import all device contacts into the CRM store (non-destructive — skips existing) */
+    private fun handleCrmImport(): Response {
+        val rel     = loadRelationships()
+        var added   = 0
+        var skipped = 0
+        try {
+            context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Phone.NUMBER),
+                null, null,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+            )?.use { cur ->
+                val seen = mutableSetOf<String>()
+                while (cur.moveToNext()) {
+                    val dName  = cur.getString(0)?.trim()?.takeIf { it.isNotBlank() } ?: continue
+                    val number = cur.getString(1)?.trim() ?: ""
+                    val key    = dName.lowercase()
+                    if (key in seen) continue; seen += key
+                    if (key in rel) { skipped++; continue }
+                    rel[key] = mutableMapOf(
+                        "displayName"      to dName,
+                        "phone"            to number,
+                        "type"             to "",
+                        "tags"             to emptyList<String>(),
+                        "notes"            to "",
+                        "interactionCount" to 0.0
+                    )
+                    added++
+                }
+            }
+        } catch (e: Exception) {
+            return jsonResponse(mapOf("error" to "Import failed: ${e.message}"), Status.INTERNAL_ERROR)
+        }
+        saveRelationships(rel)
+        return jsonResponse(mapOf("ok" to true, "added" to added, "skipped" to skipped, "total" to rel.size))
+    }
+
+    private fun handleCrmInsights(): Response {
+        val health   = toolGetRelationshipHealth(mapOf("limit" to 8.0))
+        val outreach = toolSuggestSocialOutreach(mapOf("threshold_days" to 14.0))
+        return jsonResponse(mapOf("health" to health, "outreach" to outreach))
+    }
+
+    private fun handleCrmProfile(session: IHTTPSession): Response {
+        val name = session.parameters["name"]?.firstOrNull()
+            ?: return jsonResponse(mapOf("error" to "missing name"), Status.BAD_REQUEST)
+        val profile = toolGetContactProfile(mapOf("name" to name))
+        return jsonResponse(mapOf("profile" to profile))
+    }
 
     // ── Skill registry ────────────────────────────────────────────
     private fun buildSkillRegistry(): SkillRegistry {
@@ -372,6 +796,32 @@ Help the user store and retrieve information across conversations.""",
                     "remember", "remind me", "note", "save this", "don't forget",
                     "recall", "what did i", "forgot", "memorize"
                 )
+            ),
+            SkillDef(
+                name               = "social_crm",
+                description        = "Relationship management, contact profiles, social outreach nudges",
+                systemPromptSuffix = """
+## Active skill: Social CRM
+You are a personal relationship manager. Help the user maintain meaningful connections.
+Use get_contact_profile to pull up full relationship context before any interaction.
+Use suggest_social_outreach to identify who to reach out to when the user asks who to contact.
+Use add_relationship_note to capture context after interactions — save details like mood, topics, shared interests.
+Use log_interaction when the user tells you about a recent meeting, call, or catch-up.
+Use get_relationship_health for relationship drift analysis.
+Always combine social context with communication tools (send_sms, call_contact) for warm, contextual outreach.""",
+                toolNames          = listOf(
+                    "get_contact_profile", "add_relationship_note", "log_interaction",
+                    "get_relationship_health", "suggest_social_outreach",
+                    "read_sms", "get_recent_calls", "call_contact", "send_sms",
+                    "remember", "recall", "get_device_info"
+                ),
+                triggerWords       = listOf(
+                    "relationship", "catch up", "catch-up", "reach out", "haven't talked",
+                    "haven't spoken", "who should i call", "check in", "social", "network",
+                    "friend", "family", "colleague", "follow up with", "how is", "note about",
+                    "remember about", "last time i talked", "relationship health", "drift",
+                    "outreach", "reconnect", "keep in touch", "touch base"
+                )
             )
         )
         return reg
@@ -440,6 +890,14 @@ Help the user store and retrieve information across conversations.""",
             uri == "/api/notifications/settings" && session.method == Method.POST -> handleOpenNotifSettings()
 
             uri == "/api/ollama/test" -> handleOllamaTest()
+
+            uri == "/api/crm/contacts"  && session.method == Method.GET    -> handleCrmContacts(session)
+            uri == "/api/crm/note"      && session.method == Method.POST   -> handleCrmAddNote(session)
+            uri == "/api/crm/contact"   && session.method == Method.PUT    -> handleCrmUpdateContact(session)
+            uri == "/api/crm/contact"   && session.method == Method.DELETE -> handleCrmDeleteContact(session)
+            uri == "/api/crm/import"    && session.method == Method.POST   -> handleCrmImport()
+            uri == "/api/crm/insights"  && session.method == Method.GET    -> handleCrmInsights()
+            uri == "/api/crm/profile"   && session.method == Method.GET    -> handleCrmProfile(session)
 
             else -> newFixedLengthResponse(Status.NOT_FOUND, MIME_PLAINTEXT, "Not found: $uri")
         }
@@ -712,6 +1170,12 @@ Help the user store and retrieve information across conversations.""",
                 "complete_task"     -> toolCompleteTask(args)
                 // Memory
                 "remember"          -> toolRemember(args)
+                // Social CRM
+                "get_contact_profile"     -> toolGetContactProfile(args)
+                "add_relationship_note"   -> toolAddRelationshipNote(args)
+                "log_interaction"         -> toolLogInteraction(args)
+                "get_relationship_health" -> toolGetRelationshipHealth(args)
+                "suggest_social_outreach" -> toolSuggestSocialOutreach(args)
                 // Communication (queued)
                 "call_contact"      -> toolCallContact(args)
                 "send_sms"          -> toolSendSms(args)
@@ -1307,6 +1771,7 @@ Help the user store and retrieve information across conversations.""",
         val skill = if (!skillSuffix.isNullOrBlank()) "\n\n$skillSuffix" else ""
         return """You are VoiceOS — an intelligent personal assistant running as the Android launcher on the user's phone.
 You have direct access to the device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, and the web.
+You also have a social relationship layer: use get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, and suggest_social_outreach to help the user maintain their personal network.
 Be concise and action-oriented. ALWAYS use tools to answer questions about device state.
 For outgoing actions: draft_email / send_sms / send_whatsapp queue the action for user approval — never open apps directly for these.
 call_contact and navigate open the relevant app directly.$ctx$skill"""
@@ -1356,6 +1821,21 @@ call_contact and navigate open the relevant app directly.$ctx$skill"""
             // Memory
             val notes = prefs.getString("agent_notes", "") ?: ""
             if (notes.isNotBlank()) { sb.appendLine("  Memory:"); notes.lines().takeLast(3).forEach { sb.appendLine("    $it") } }
+            // Social CRM — relationship nudges
+            try {
+                val rel = loadRelationships()
+                if (rel.isNotEmpty()) {
+                    val drifted = rel.entries.mapNotNull { (key, _) ->
+                        val displayName = key.replaceFirstChar { it.titlecase() }
+                        val days = daysSinceLastDeviceContact(displayName) ?: daysSinceLastDeviceContact(key)
+                        if (days != null && days >= 14) Pair(displayName, days) else null
+                    }.sortedByDescending { it.second }.take(3)
+                    if (drifted.isNotEmpty()) {
+                        sb.appendLine("  Social nudges:")
+                        drifted.forEach { (name, days) -> sb.appendLine("    • $name — ${days}d since last contact") }
+                    }
+                }
+            } catch (_: Exception) {}
             // Pending queue
             val pending = actionQueue.getPending()
             if (pending.isNotEmpty()) {
