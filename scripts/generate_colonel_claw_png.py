@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Generate assets/colonel-claw.png without external dependencies.
-
-This keeps PRs text-only when binary uploads are restricted.
-"""
+"""Generate a crab-style Colonel Claw PNG without external dependencies."""
 
 import struct
 import zlib
@@ -12,7 +9,7 @@ W = H = 320
 
 
 def main() -> None:
-    pix = [[(18, 24, 36, 255) for _ in range(W)] for __ in range(H)]
+    pix = [[(14, 20, 32, 255) for _ in range(W)] for __ in range(H)]
 
     def put(x, y, c):
         if 0 <= x < W and 0 <= y < H:
@@ -37,11 +34,6 @@ def main() -> None:
                 if dx * dx * ry2 + dy * dy * rx2 <= lim:
                     put(x, y, c)
 
-    def fill_rect(x0, y0, x1, y1, c):
-        for y in range(y0, y1 + 1):
-            for x in range(x0, x1 + 1):
-                put(x, y, c)
-
     def fill_poly(pts, c):
         ys = [p[1] for p in pts]
         for y in range(min(ys), max(ys) + 1):
@@ -60,65 +52,69 @@ def main() -> None:
                     for x in range(xs[i], xs[i + 1] + 1):
                         put(x, y, c)
 
+    def fill_rect(x0, y0, x1, y1, c):
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                put(x, y, c)
+
     def outline(mask_color, stroke):
-        to_outline = []
+        edge = []
         for y in range(1, H - 1):
             for x in range(1, W - 1):
                 if pix[y][x] == mask_color:
                     for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
                         if pix[ny][nx] != mask_color:
-                            to_outline.append((nx, ny))
-        for x, y in to_outline:
+                            edge.append((nx, ny))
+        for x, y in edge:
             put(x, y, stroke)
 
-    # Paint mascot
-    fill_circle(160, 160, 130, (34, 50, 74, 255))
-    body = (239, 229, 205, 255)
-    wing = (225, 214, 189, 255)
-    face = (247, 238, 216, 255)
-    fill_ellipse(160, 186, 78, 95, body)
-    fill_ellipse(111, 191, 30, 42, wing)
-    fill_ellipse(209, 191, 30, 42, wing)
-    fill_ellipse(160, 128, 62, 54, face)
+    # Background halo
+    fill_circle(160, 160, 132, (26, 45, 74, 255))
 
-    green = (40, 88, 66, 255)
-    fill_rect(98, 70, 222, 94, green)
-    fill_rect(128, 45, 192, 72, green)
-    fill_circle(160, 59, 6, (244, 209, 90, 255))
-
-    red = (214, 63, 63, 255)
-    fill_circle(138, 68, 11, red)
-    fill_circle(160, 64, 12, red)
-    fill_circle(182, 68, 11, red)
-
-    white = (250, 250, 250, 255)
+    shell = (206, 62, 66, 255)
+    shell_dark = (176, 42, 50, 255)
+    cream = (240, 223, 190, 255)
+    eye_white = (247, 247, 247, 255)
     black = (20, 20, 20, 255)
-    fill_circle(141, 128, 12, white)
-    fill_circle(179, 128, 12, white)
-    fill_circle(141, 131, 4, black)
-    fill_circle(179, 131, 4, black)
+    gold = (242, 203, 84, 255)
+    uniform = (44, 94, 72, 255)
 
-    orange = (236, 170, 58, 255)
-    fill_poly([(160, 142), (176, 152), (160, 168), (144, 152)], orange)
+    # Body and belly
+    fill_ellipse(160, 190, 88, 66, shell)
+    fill_ellipse(160, 200, 54, 34, cream)
 
-    fill_poly([(160, 188), (149, 209), (171, 209)], (190, 44, 50, 255))
+    # Claws
+    fill_ellipse(88, 156, 34, 26, shell)
+    fill_ellipse(232, 156, 34, 26, shell)
+    fill_poly([(58, 152), (92, 138), (86, 166)], shell)
+    fill_poly([(262, 152), (228, 138), (234, 166)], shell)
 
-    claw = (216, 160, 64, 255)
-    fill_poly([(121, 234), (134, 244), (123, 258), (109, 252)], claw)
-    fill_poly([(199, 234), (212, 244), (201, 258), (187, 252)], claw)
+    # Legs
+    fill_poly([(102, 212), (70, 234), (80, 244), (114, 222)], shell_dark)
+    fill_poly([(126, 226), (96, 250), (108, 260), (136, 236)], shell_dark)
+    fill_poly([(218, 212), (250, 234), (240, 244), (206, 222)], shell_dark)
+    fill_poly([(194, 226), (224, 250), (212, 260), (184, 236)], shell_dark)
 
-    fill_rect(36, 276, 284, 306, (13, 17, 25, 255))
+    # Eye stalks + eyes
+    fill_rect(132, 108, 142, 152, shell)
+    fill_rect(178, 108, 188, 152, shell)
+    fill_circle(137, 102, 16, eye_white)
+    fill_circle(183, 102, 16, eye_white)
+    fill_circle(137, 106, 6, black)
+    fill_circle(183, 106, 6, black)
 
-    for x in range(52, 92):
-        for y in range(283, 299):
-            if x < 58 or y < 287 or y > 295:
-                put(x, y, (235, 235, 235, 255))
-    for x in range(98, 138):
-        for y in range(283, 299):
-            if x < 104 or y < 287 or y > 295:
-                put(x, y, (235, 235, 235, 255))
+    # Colonel cap
+    fill_rect(102, 118, 218, 138, uniform)
+    fill_rect(132, 90, 188, 116, uniform)
+    fill_circle(160, 103, 6, gold)
 
-    for col in [body, wing, face, green, red, white, orange, claw]:
+    # Mouth + insignia bar
+    fill_rect(132, 208, 188, 214, shell_dark)
+    fill_rect(120, 236, 200, 250, (12, 16, 24, 255))
+    fill_rect(128, 240, 138, 246, gold)
+    fill_rect(144, 240, 154, 246, gold)
+
+    for col in [shell, shell_dark, cream, eye_white, uniform, gold]:
         outline(col, (28, 28, 28, 255))
 
     raw = b""

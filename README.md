@@ -48,7 +48,7 @@ This repository supports experimentation and development in areas such as:
 
 ## Mascot (secondary branding): Colonel Claw
 
-Colonel Claw is the project mascot — a playful **Kernel/Colonel** pun.
+Colonel Claw is a **crab** mascot — still a playful **Kernel/Colonel** pun, now with claws that match the name.
 He is intentionally **not** the product focus; he is a visual identity for docs, demos, and CLI banners.
 
 Generate the PNG locally (so PRs can stay text-only if your forge blocks binary diffs):
@@ -64,19 +64,17 @@ Then you can download/use the file at `assets/colonel-claw.png` locally or uploa
 ### Terminal ASCII mascot (derived from the PNG style)
 
 ```text
-               .-"""-.
-          _   /  .-.  \   _
-        _( )_|  (o o)  |_(_)_
-       /  _  \   \_/   /  _  \
-      |  (_)  | .---. |  (_)  |
-      |   _   |/| K |\|   _   |
-      |  | |  / |___| \  | |  |
-      |__|_|_/  /___\  \_|_|__|
-         /___\   / \   /___\
-         \___/  /___\  \___/
-
-           Colonel Claw
-      "Cute. Precise. Mission-ready."
+            __     __
+      _.-""  "-.-"  ""-._
+    .'   _  Colonel Claw  '.
+   /   .'o\            /o'. \
+  |   /___/  .-====-.  \___\ |
+  |   \   \ (  KERN  ) /   / |
+   \   '.__\ '-====-' /__.' /
+    '._    _\  /  \  /_   _.'
+       "-.'  \/ /\ \/  '.-"
+          \__/ /  \ \__/
+            /_/    \_\
 ```
 
 ## Practical use of this README
