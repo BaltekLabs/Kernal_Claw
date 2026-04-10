@@ -61,6 +61,97 @@ class VoiceOSServer(
     private fun saveKey(provider: String, key: String) =
         prefs.edit().putString("key_$provider", key).apply()
 
+    // ── User profile ─────────────────────────────────────────────
+    private val PROFILE_KEY = "user_profile"
+
+    private fun loadProfile(): MutableMap<String, Any> {
+        val json = prefs.getString(PROFILE_KEY, "{}") ?: "{}"
+        return try {
+            @Suppress("UNCHECKED_CAST")
+            (gson.fromJson(json, Map::class.java) as? Map<String, Any>)?.toMutableMap() ?: mutableMapOf()
+        } catch (_: Exception) { mutableMapOf() }
+    }
+
+    private fun saveProfile(profile: Map<String, Any>) {
+        prefs.edit().putString(PROFILE_KEY, gson.toJson(profile)).apply()
+    }
+
+    /** Merge partial fields into the stored profile. Lists and objects are replaced, not appended. */
+    @Suppress("UNCHECKED_CAST")
+    private fun mergeProfile(updates: Map<String, Any>): Map<String, Any> {
+        val profile = loadProfile()
+        updates.forEach { (k, v) -> if (v != null) profile[k] = v }
+        saveProfile(profile)
+        return profile
+    }
+
+    /** Format the profile for injection into the system prompt. Returns "" when profile is absent. */
+    private fun buildProfileContext(): String {
+        val p = loadProfile()
+        if (p.isEmpty()) return ""
+        val sb = StringBuilder("\n## Your User\n")
+        (p["name"] as? String)?.takeIf { it.isNotBlank() }?.let { sb.appendLine("Name: $it") }
+
+        @Suppress("UNCHECKED_CAST")
+        val projects = (p["projects"] as? List<Map<String, Any>>)?.filterIsInstance<Map<String, Any>>() ?: emptyList()
+        if (projects.isNotEmpty()) {
+            sb.appendLine("Active projects:")
+            projects.forEach { proj ->
+                val n    = proj["name"] as? String ?: return@forEach
+                val desc = proj["description"] as? String ?: ""
+                val path = (proj["termux_path"] as? String)?.takeIf { it.isNotBlank() }?.let { " [path: $it]" } ?: ""
+                val st   = (proj["status"] as? String)?.takeIf { it.isNotBlank() }?.let { " [status: $it]" } ?: ""
+                val nx   = (proj["next_action"] as? String)?.takeIf { it.isNotBlank() }?.let { " [next: $it]" } ?: ""
+                sb.appendLine("  • $n: $desc$path$st$nx")
+            }
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val social = (p["social_goals"] as? List<Map<String, Any>>)?.filterIsInstance<Map<String, Any>>() ?: emptyList()
+        if (social.isNotEmpty()) {
+            sb.appendLine("Social goals (relationship · target frequency):")
+            social.forEach { g ->
+                val person = g["person"] as? String ?: return@forEach
+                val rel    = (g["relationship"] as? String)?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+                val freq   = (g["frequency_days"] as? Double)?.toInt()?.let { " every ${it}d" } ?: ""
+                sb.appendLine("  • $person$rel$freq")
+            }
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val sched = p["schedule"] as? Map<String, String>
+        if (sched != null) {
+            val tz    = sched["timezone"] ?: ""
+            val start = sched["work_start"] ?: ""
+            val end   = sched["work_end"] ?: ""
+            if (start.isNotBlank()) sb.appendLine("Schedule: $start–$end${if (tz.isNotBlank()) " $tz" else ""}")
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val focus = (p["focus_areas"] as? List<*>)?.filterIsInstance<String>()
+        if (!focus.isNullOrEmpty()) sb.appendLine("Focus: ${focus.joinToString(", ")}")
+
+        return sb.toString().trimEnd()
+    }
+
+    // ── Onboarding conversation context (separate from main agent) ──
+    private val onboardingContext = ConversationContext(maxMessages = 40)
+
+    private val ONBOARD_SYS = """You are setting up the VoiceOS agent profile for a new user.
+Your goal: collect enough information to make the agent proactively useful every day.
+Ask ONE short question at a time. Be warm, brief, and concrete.
+
+Collect (in this order, skip if user already covered it):
+1. Their name
+2. Active projects — name, one-line description, and Termux path if on this device (e.g. ~/Dev/myapp)
+3. People they want to stay connected with — name, relationship (friend/family/work/mentor), and how often (days)
+4. Typical work schedule — start time, end time, timezone
+
+After you have reasonable answers for each area (they can be brief), call update_user_profile with everything collected and onboarding_complete: true.
+
+Rules: Never ask more than one question at once. Accept "skip" or "not sure" gracefully. Keep responses ≤3 sentences.
+Start: introduce yourself in one sentence, then ask for their name."""
+
     // ── Subsystems ────────────────────────────────────────────────
     private val actionQueue by lazy { ActionQueue(context) }
 
@@ -80,7 +171,8 @@ class VoiceOSServer(
         ProbeHeartbeat { probe ->
             val toolDefs = if (probe.toolNames.isEmpty()) allTools
                            else allTools.filter { it.name in probe.toolNames }
-            val liveCtx  = try { buildLiveContext(minimal = true) } catch (_: Exception) { "" }
+            val liveCtx   = try { buildLiveContext(minimal = true) } catch (_: Exception) { "" }
+            // Heartbeat always gets the full profile context so probes are goal-aware
             val sysPrompt = agentSystemPrompt(liveCtx)
             val msgs = mutableListOf<Map<String, Any>>(
                 mapOf("role" to "user", "content" to probe.prompt)
@@ -312,7 +404,23 @@ class VoiceOSServer(
         ToolDef("navigate",
             "Open Maps to navigate to a location",
             mapOf("destination" to mapOf("type" to "string", "description" to "Destination address or place name")),
-            listOf("destination"), requiresConfirm = true)
+            listOf("destination"), requiresConfirm = true),
+
+        // ── User profile ──────────────────────────────────────────
+        ToolDef("get_user_profile",
+            "Retrieve the user's persistent agent profile: projects, social goals, schedule, focus areas.",
+            emptyMap(), emptyList()),
+        ToolDef("update_user_profile",
+            "Create or update the user's persistent agent profile. Merge partial updates — only supply fields that changed. " +
+            "Set onboarding_complete:true when the initial profile collection is finished.",
+            mapOf(
+                "name"                to mapOf("type" to "string",  "description" to "User's preferred name"),
+                "projects"            to mapOf("type" to "array",   "description" to "Active projects: [{name,description,termux_path,status,next_action}]"),
+                "social_goals"        to mapOf("type" to "array",   "description" to "Relationship goals: [{person,relationship,frequency_days}]"),
+                "schedule"            to mapOf("type" to "object",  "description" to "Work schedule: {timezone,work_start,work_end}"),
+                "focus_areas"         to mapOf("type" to "array",   "description" to "Main focus areas e.g. ['project development','social networking']"),
+                "onboarding_complete" to mapOf("type" to "boolean", "description" to "Set true when profile collection is done")
+            ), emptyList())
     )
 
     // ════════════════════════════════════════════════════════════════
@@ -990,9 +1098,16 @@ Always combine social context with communication tools (send_sms, call_contact) 
 
             uri == "/api/ollama/test" -> handleOllamaTest()
 
+            uri == "/api/profile"    && session.method == Method.GET  -> handleGetProfile()
+            uri == "/api/profile"    && session.method == Method.POST -> handleSaveProfile(session)
+            uri == "/api/onboard"    && session.method == Method.POST -> handleOnboard(session)
+
             uri == "/api/crm/contacts"  && session.method == Method.GET    -> handleCrmContacts(session)
             uri == "/api/crm/note"      && session.method == Method.POST   -> handleCrmAddNote(session)
+            // Accept both POST and PUT for updates (NanoHTTPD parseBody is reliable on POST)
+            uri == "/api/crm/contact/update" && session.method == Method.POST -> handleCrmUpdateContact(session)
             uri == "/api/crm/contact"   && session.method == Method.PUT    -> handleCrmUpdateContact(session)
+            uri == "/api/crm/contact/delete" && session.method == Method.POST -> handleCrmDeleteContact(session)
             uri == "/api/crm/contact"   && session.method == Method.DELETE -> handleCrmDeleteContact(session)
             uri == "/api/crm/import"    && session.method == Method.POST   -> handleCrmImport()
             uri == "/api/crm/insights"  && session.method == Method.GET    -> handleCrmInsights()
@@ -1267,8 +1382,10 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 "add_task"          -> toolAddTask(args)
                 "update_task"       -> toolUpdateTask(args)
                 "complete_task"     -> toolCompleteTask(args)
-                // Memory
-                "remember"          -> toolRemember(args)
+                // Memory & profile
+                "remember"              -> toolRemember(args)
+                "get_user_profile"      -> toolGetUserProfile()
+                "update_user_profile"   -> toolUpdateUserProfile(args)
                 // Social CRM
                 "get_contact_profile"     -> toolGetContactProfile(args)
                 "add_relationship_note"   -> toolAddRelationshipNote(args)
@@ -1655,6 +1772,20 @@ Always combine social context with communication tools (send_sms, call_contact) 
         return "Remembered: $note"
     }
 
+    private fun toolGetUserProfile(): String {
+        val p = loadProfile()
+        if (p.isEmpty()) return "No profile saved yet."
+        return buildProfileContext().ifBlank { "Profile is empty." }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun toolUpdateUserProfile(args: Map<String, Any>): String {
+        val profile = mergeProfile(args)
+        val complete = profile["onboarding_complete"] as? Boolean ?: false
+        val name = profile["name"] as? String ?: "user"
+        return if (complete) "Profile saved for $name. Onboarding complete." else "Profile updated."
+    }
+
     // ── Communication ─────────────────────────────────────────────
     private fun toolCallContact(args: Map<String, Any>): String {
         val target = args["name_or_number"] as? String ?: return "Missing name_or_number"
@@ -1866,14 +1997,16 @@ Always combine social context with communication tools (send_sms, call_contact) 
     // System prompt & live context
     // ════════════════════════════════════════════════════════════════
     private fun agentSystemPrompt(liveCtx: String = "", skillSuffix: String? = null): String {
-        val ctx = if (liveCtx.isNotBlank()) "\n\n$liveCtx" else ""
+        val profileCtx = buildProfileContext()
+        val profile = if (profileCtx.isNotBlank()) "\n\n$profileCtx" else ""
+        val ctx   = if (liveCtx.isNotBlank()) "\n\n$liveCtx" else ""
         val skill = if (!skillSuffix.isNullOrBlank()) "\n\n$skillSuffix" else ""
         return """You are VoiceOS — an intelligent personal assistant running as the Android launcher on the user's phone.
 You have direct access to the device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, and the web.
 You also have a social relationship layer: use get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, and suggest_social_outreach to help the user maintain their personal network.
 Be concise and action-oriented. ALWAYS use tools to answer questions about device state.
 For outgoing actions: draft_email / send_sms / send_whatsapp queue the action for user approval — never open apps directly for these.
-call_contact and navigate open the relevant app directly.$ctx$skill"""
+call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
     }
 
     private fun buildLiveContext(minimal: Boolean = false): String {
@@ -1920,6 +2053,28 @@ call_contact and navigate open the relevant app directly.$ctx$skill"""
             // Memory
             val notes = prefs.getString("agent_notes", "") ?: ""
             if (notes.isNotBlank()) { sb.appendLine("  Memory:"); notes.lines().takeLast(3).forEach { sb.appendLine("    $it") } }
+            // User profile summary (projects + social goals)
+            val prof = loadProfile()
+            if (prof["onboarding_complete"] == true) {
+                @Suppress("UNCHECKED_CAST")
+                val projects = (prof["projects"] as? List<Map<String, Any>>)?.filterIsInstance<Map<String, Any>>() ?: emptyList()
+                if (projects.isNotEmpty()) {
+                    sb.appendLine("  Active projects: ${projects.mapNotNull { it["name"] as? String }.joinToString(", ")}")
+                }
+                @Suppress("UNCHECKED_CAST")
+                val social = (prof["social_goals"] as? List<Map<String, Any>>)?.filterIsInstance<Map<String, Any>>() ?: emptyList()
+                if (social.isNotEmpty()) {
+                    val overdue = social.filter { g ->
+                        val person = g["person"] as? String ?: return@filter false
+                        val freqDays = (g["frequency_days"] as? Double)?.toInt() ?: return@filter false
+                        val days = daysSinceLastDeviceContact(person)
+                        days != null && days >= freqDays
+                    }
+                    if (overdue.isNotEmpty()) {
+                        sb.appendLine("  Social goals overdue: ${overdue.mapNotNull { it["person"] as? String }.joinToString(", ")}")
+                    }
+                }
+            }
             // Social CRM — relationship nudges
             try {
                 val rel = loadRelationships()
@@ -1944,6 +2099,87 @@ call_contact and navigate open the relevant app directly.$ctx$skill"""
         }
         sb.append("╚════════════════════════════════════════════════════════╝")
         return sb.toString()
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // User profile & onboarding handlers
+    // ════════════════════════════════════════════════════════════════
+
+    private fun handleGetProfile(): Response {
+        val profile = loadProfile()
+        return jsonResponse(profile)
+    }
+
+    private fun handleSaveProfile(session: IHTTPSession): Response {
+        val body = parseBody(session)
+        if (body.isEmpty()) return jsonResponse(mapOf("error" to "empty body"), Status.BAD_REQUEST)
+        val merged = mergeProfile(body)
+        return jsonResponse(mapOf("ok" to true, "profile" to merged))
+    }
+
+    /**
+     * Onboarding conversation endpoint.
+     * POST { message: "" }  → agent sends opening question
+     * POST { message: "..." } → continues the conversation
+     * Returns { reply: "...", done: false|true }
+     * done=true means update_user_profile was called with onboarding_complete:true
+     */
+    private fun handleOnboard(session: IHTTPSession): Response {
+        val body    = parseBody(session)
+        val userMsg = (body["message"] as? String)?.trim() ?: ""
+        val reset   = body["reset"] as? Boolean ?: false
+
+        if (reset) {
+            onboardingContext.clear()
+            mergeProfile(mapOf("onboarding_complete" to false))
+        }
+
+        // First turn: agent sends the opening
+        if (userMsg.isBlank() && onboardingContext.messages.isEmpty()) {
+            val msgs  = listOf<Map<String, Any>>()  // empty — system prompt handles the opener
+            val tools = allTools.filter { it.name in listOf("update_user_profile", "get_user_profile") }
+            val result = callLLMWithTools(msgs, tools, ONBOARD_SYS)
+            val reply  = result.text.trim()
+            if (reply.isNotBlank()) onboardingContext.addAssistant(reply)
+            return jsonResponse(mapOf("reply" to reply, "done" to false))
+        }
+
+        // Subsequent turns
+        if (userMsg.isNotBlank()) onboardingContext.addUser(userMsg)
+        val tools = allTools.filter { it.name in listOf("update_user_profile", "get_user_profile") }
+        val msgs  = onboardingContext.snapshot().toMutableList()
+        var reply = ""
+        var done  = false
+
+        for (step in 0..3) {
+            val result = callLLMWithTools(msgs, tools, ONBOARD_SYS)
+            if (result.text.isNotBlank()) reply += result.text
+            if (result.done || result.toolCalls.isEmpty()) {
+                onboardingContext.addAssistant(result.rawContent)
+                break
+            }
+            msgs += mapOf("role" to "assistant", "content" to result.rawContent)
+            onboardingContext.addAssistant(result.rawContent)
+            for (tc in result.toolCalls) {
+                val toolResult = try { executeTool(tc.name, tc.args) } catch (e: Exception) { "error: ${e.message}" }
+                if (tc.name == "update_user_profile") {
+                    val savedProfile = loadProfile()
+                    done = savedProfile["onboarding_complete"] as? Boolean ?: false
+                }
+                val toolMsg = if (activeProvider == "anthropic") {
+                    mapOf("role" to "user", "content" to listOf(
+                        mapOf("type" to "tool_result", "tool_use_id" to tc.id, "content" to toolResult)
+                    ))
+                } else {
+                    mapOf("role" to "tool", "tool_call_id" to tc.id, "name" to tc.name, "content" to toolResult)
+                }
+                msgs += toolMsg
+                onboardingContext.addRawMessage(toolMsg)
+            }
+            if (done) break
+        }
+
+        return jsonResponse(mapOf("reply" to reply.trim(), "done" to done))
     }
 
     // ════════════════════════════════════════════════════════════════

@@ -31,7 +31,7 @@
   </div>
 
   <!-- Swipe hint -->
-  <div id="hint">tap · swipe up for apps · swipe right for menu · swipe left for people</div>
+  <div id="hint">swipe up for apps · swipe right for menu · swipe left for people</div>
 
   <!-- Bottom-half message display (feedback / heartbeat notices) -->
   <div id="msg-display" aria-live="polite">
@@ -91,11 +91,11 @@
   <!-- ── Suggestions: app/contact quick-launch ───────────────── -->
   <div id="suggestions"></div>
 
-  <!-- ── Mic toggle (shown in keyboard mode) ────────────────── -->
-  <button id="mic-btn-small" aria-label="Switch to voice">🎤</button>
+  <!-- ── Speak pill — always-visible bottom-left rectangle ──── -->
+  <button id="mic-btn-small" aria-label="Speak">🎤 Speak</button>
 
-  <!-- ── Send button (shown while typing) ────────────────────── -->
-  <button id="send-btn" aria-label="Send">&#9658;</button>
+  <!-- ── Tasks/Send pill — always-visible bottom-right rectangle -->
+  <button id="send-btn" aria-label="Tasks">☰ Tasks</button>
 
   <!-- ── Hidden input panel — keyboard capture only ──────────── -->
   <div id="input-panel" aria-label="Message input">
@@ -251,6 +251,28 @@
       <p>Tap <strong>Import</strong> to seed from your contacts,<br>or ask the agent about someone.</p>
     </div>
 
+  </div>
+
+  <!-- ── Agent onboarding overlay ──────────────────────────────── -->
+  <div id="onboard-overlay" role="dialog" aria-label="Agent setup" style="display:none">
+    <div id="onboard-header">
+      <span id="onboard-title">Agent Setup</span>
+      <button id="onboard-skip" aria-label="Skip setup">Skip</button>
+    </div>
+    <div id="onboard-progress">
+      <span class="ob-step" data-step="name">Name</span>
+      <span class="ob-step" data-step="projects">Projects</span>
+      <span class="ob-step" data-step="social">Social</span>
+      <span class="ob-step" data-step="schedule">Schedule</span>
+    </div>
+    <div id="onboard-messages"></div>
+    <div id="onboard-input-row">
+      <button id="onboard-mic-btn" aria-label="Speak answer">🎤</button>
+      <input id="onboard-text-input" type="text"
+        placeholder="Type your answer…"
+        autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false">
+      <button id="onboard-send-btn" aria-label="Send">▶</button>
+    </div>
   </div>
 
   <!-- ── Tool confirmation dialog -->

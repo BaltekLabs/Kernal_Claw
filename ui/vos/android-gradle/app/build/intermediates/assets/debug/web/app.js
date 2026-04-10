@@ -354,9 +354,9 @@ function showMsgDisplay(text, durationMs = 5000) {
 }
 
 function showFeedback(msg) {
-  showMsgDisplay(msg, 4000);
+  showMsgDisplay(msg, 7000);
   setCircleState(CircleState.RESPONDING);
-  setTimeout(() => { if (!isProcessing) setCircleState(CircleState.IDLE); }, 3000);
+  setTimeout(() => { if (!isProcessing) setCircleState(CircleState.IDLE); }, 5000);
 }
 
 function findApp(query) {
@@ -542,7 +542,6 @@ function showPanel(name) {
   activePanel = name;
   if (name === 'input') {
     inputDisplay.classList.add('visible');
-    sendBtn.classList.add('visible');
     refreshInputDisplay();
     setCircleState(CircleState.LISTENING);
     // Default to voice mode; keyboard is opt-in
@@ -560,12 +559,11 @@ function closePanel(name, resetActive = true) {
   if (name === 'input') {
     inputDisplay.classList.remove('visible');
     inputDisplay.classList.remove('voice-mode');
-    sendBtn.classList.remove('visible');
-    micBtnSmall.classList.remove('visible');
     hideSuggestions();
     stopVoice();
     chatInput.blur();
     inputMode = 'idle';
+    updateBottomBar();
   }
   if (resetActive) {
     activePanel = null;
@@ -840,7 +838,7 @@ function buildPersonCard(contact) {
   card.querySelector('[data-qa="remove"]').addEventListener('click', async e => {
     e.stopPropagation();
     if (!confirm(`Remove ${contact.name} from People?`)) return;
-    await post('/api/crm/contact', { name: contact.key || contact.name }, 'DELETE');
+    await post('/api/crm/contact/delete', { name: contact.key || contact.name });
     await loadPeoplePanel();
   });
 
@@ -850,7 +848,7 @@ function buildPersonCard(contact) {
       e.stopPropagation();
       const type = btn.dataset.rtype;
       card.querySelectorAll('.ptp-btn').forEach(b => b.classList.toggle('active', b === btn));
-      await post('/api/crm/contact', { name: contact.key || contact.name, type }, 'PUT');
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, type });
       contact.type = type;
       // Update badge in top row
       const row2 = card.querySelector('.person-card-row2');
@@ -874,7 +872,7 @@ function buildPersonCard(contact) {
       if (!tag || tags.includes(tag)) { tagInput.value = ''; return; }
       tags.push(tag);
       tagInput.value = '';
-      await post('/api/crm/contact', { name: contact.key || contact.name, tags }, 'PUT');
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, tags });
       // Add pill before input
       const pill = document.createElement('span');
       pill.className = 'person-tag-pill';
@@ -883,7 +881,7 @@ function buildPersonCard(contact) {
         ev.stopPropagation();
         const idx = tags.indexOf(tag); if (idx >= 0) tags.splice(idx, 1);
         pill.remove();
-        await post('/api/crm/contact', { name: contact.key || contact.name, tags }, 'PUT');
+        await post('/api/crm/contact/update', { name: contact.key || contact.name, tags });
       });
       tagRow.insertBefore(pill, tagInput);
     }
@@ -895,7 +893,7 @@ function buildPersonCard(contact) {
       const tag = btn.dataset.removetag;
       const idx = tags.indexOf(tag); if (idx >= 0) tags.splice(idx, 1);
       btn.closest('.person-tag-pill').remove();
-      await post('/api/crm/contact', { name: contact.key || contact.name, tags }, 'PUT');
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, tags });
     });
   });
 
@@ -1080,8 +1078,40 @@ clearBtn.addEventListener('click', async () => {
   closeAllPanels();
 });
 
-// ── Input handling ──────────────────────────────────────────────
-sendBtn.addEventListener('click', () => submitInput());
+// ── Bottom pill bar ──────────────────────────────────────────────
+// Updates Send/Tasks label and tracks keyboard height via visualViewport.
+function updateBottomBar() {
+  const canSend = inputMode === 'keyboard' && chatInput.value.trim().length > 0;
+  sendBtn.textContent = canSend ? '▶ Send' : '☰ Tasks';
+}
+
+// Keyboard-height tracking so pills tuck above the soft keyboard
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    const kb = Math.max(0, window.innerHeight - window.visualViewport.height);
+    document.documentElement.style.setProperty('--keyboard-height', kb + 'px');
+  });
+}
+
+// Speak pill — opens voice input from any state
+micBtnSmall.addEventListener('click', e => {
+  e.stopPropagation();
+  if (activePanel !== 'input') showPanel('input');
+  showInputVoiceMode();
+  setTimeout(() => { if (inputMode === 'voice' && !speechRec) startVoice(); }, 80);
+});
+micBtnSmall.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Tasks/Send pill — context-aware
+sendBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  if (inputMode === 'keyboard' && chatInput.value.trim().length > 0) {
+    submitInput();
+  } else {
+    if (activePanel === 'input') closePanel('input');
+    showTaskOverlay(false);
+  }
+});
 sendBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 
 chatInput.addEventListener('keydown', e => {
@@ -1090,6 +1120,7 @@ chatInput.addEventListener('keydown', e => {
 chatInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 chatInput.addEventListener('input', () => {
   refreshInputDisplay();
+  updateBottomBar();
   if (activePanel === 'input') updateSuggestions();
 });
 
@@ -1345,8 +1376,8 @@ function showInputVoiceMode() {
   inputMode = 'voice';
   inputDisplay.classList.add('voice-mode');
   micBtn.classList.remove('listening');
-  micBtnSmall.classList.remove('visible');
   voiceStatus.textContent = 'tap to speak';
+  updateBottomBar();
 }
 
 function showInputKeyboardMode(focusImmediate = false) {
@@ -1354,7 +1385,7 @@ function showInputKeyboardMode(focusImmediate = false) {
   inputMode = 'keyboard';
   stopVoice();
   inputDisplay.classList.remove('voice-mode');
-  micBtnSmall.classList.add('visible');
+  updateBottomBar();
   // Focus immediately when called from a direct touch/click handler so Android
   // shows the keyboard. The setTimeout fallback handles programmatic calls.
   if (focusImmediate) {
@@ -1457,13 +1488,6 @@ keyboardBtn.addEventListener('click', (e) => {
   showInputKeyboardMode(true);
 });
 
-// Small mic button (shown in keyboard mode) — switch back to voice
-micBtnSmall.addEventListener('click', (e) => {
-  e.stopPropagation();
-  showInputVoiceMode();
-});
-micBtnSmall.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
-
 // ── Response follow-up action buttons ───────────────────────────
 followupVoiceBtn.addEventListener('touchend', (e) => {
   e.preventDefault(); e.stopPropagation();
@@ -1523,8 +1547,8 @@ const taskOverlayClose = document.getElementById('task-overlay-close');
 let taskCache       = [];
 let taskOverlayOpen = false;
 let idleTimer       = null;
-const IDLE_SHOW_MS  = 18_000;    // show tasks after 18s idle
-const OVERLAY_AUTO_HIDE_MS = 9_000;  // auto-hide after 9s
+const IDLE_SHOW_MS  = 60_000;    // show tasks after 60s idle
+const OVERLAY_AUTO_HIDE_MS = 8_000;  // auto-hide after 8s
 let overlayHideTimer = null;
 
 // ── Task data helpers ────────────────────────────────────────────
@@ -1667,7 +1691,7 @@ function resetIdleTimer() {
 }
 
 // Also show on a fixed periodic schedule regardless of idle state
-const TASK_PERIODIC_MS = 120_000;  // every 2 minutes
+const TASK_PERIODIC_MS = 300_000;  // every 5 minutes
 setInterval(() => {
   if (!isProcessing && !activePanel && !taskOverlayOpen) {
     loadTaskCache().then(() => {
@@ -1815,6 +1839,163 @@ setTimeout(() => {
   setInterval(pollNotifications, NOTIF_POLL_MS);
 }, 5_000);
 
+// ── Onboarding overlay ───────────────────────────────────────────
+const onboardOverlay   = document.getElementById('onboard-overlay');
+const onboardSkip      = document.getElementById('onboard-skip');
+const onboardMessages  = document.getElementById('onboard-messages');
+const onboardTextInput = document.getElementById('onboard-text-input');
+const onboardSendBtn   = document.getElementById('onboard-send-btn');
+const onboardMicBtn    = document.getElementById('onboard-mic-btn');
+const onboardSteps     = document.querySelectorAll('.ob-step');
+
+let onboardActive    = false;
+let onboardSpeechRec = null;
+
+async function checkOnboarding() {
+  try {
+    const profile = await fetch('/api/profile').then(r => r.json());
+    if (!profile.onboarding_complete) showOnboarding();
+  } catch { /* endpoint not ready — skip silently */ }
+}
+
+function showOnboarding() {
+  onboardActive = true;
+  onboardMessages.innerHTML = '';
+  onboardOverlay.style.display = '';
+  onboardOverlay.classList.add('visible');
+  // Kick off the opening question from the server
+  setTimeout(() => _sendOnboard(''), 300);
+}
+
+function hideOnboarding() {
+  onboardActive = false;
+  stopOnboardVoice();
+  onboardOverlay.classList.remove('visible');
+  setTimeout(() => { onboardOverlay.style.display = 'none'; }, 400);
+}
+
+function _appendOnboardMsg(role, text) {
+  const el = document.createElement('div');
+  el.className = `ob-msg ${role}`;
+  el.textContent = text;
+  onboardMessages.appendChild(el);
+  onboardMessages.scrollTop = onboardMessages.scrollHeight;
+}
+
+function _setOnboardStep(stepName) {
+  const ORDER = ['name', 'projects', 'social', 'schedule'];
+  const idx = ORDER.indexOf(stepName);
+  onboardSteps.forEach(s => {
+    const si = ORDER.indexOf(s.dataset.step);
+    s.classList.remove('active', 'done');
+    if (si < idx)      s.classList.add('done');
+    else if (si === idx) s.classList.add('active');
+  });
+}
+
+async function _sendOnboard(text) {
+  if (text.trim()) _appendOnboardMsg('user', text.trim());
+
+  const thinkEl = document.createElement('div');
+  thinkEl.className = 'ob-msg thinking';
+  thinkEl.textContent = '…';
+  onboardMessages.appendChild(thinkEl);
+  onboardMessages.scrollTop = onboardMessages.scrollHeight;
+
+  try {
+    const res = await fetch('/api/onboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text || '' }),
+    }).then(r => r.json());
+
+    thinkEl.remove();
+    if (res.reply) _appendOnboardMsg('agent', res.reply);
+    if (res.step)  _setOnboardStep(res.step);
+    if (res.done) {
+      setTimeout(() => {
+        hideOnboarding();
+        showFeedback('Agent setup complete — your profile is saved.');
+      }, 1200);
+    }
+  } catch {
+    thinkEl.remove();
+    _appendOnboardMsg('agent', 'Trouble connecting. You can skip and continue.');
+  }
+}
+
+function _submitOnboardText() {
+  const text = onboardTextInput.value.trim();
+  if (!text) return;
+  onboardTextInput.value = '';
+  _sendOnboard(text);
+}
+
+// Skip
+onboardSkip.addEventListener('click', async () => {
+  await post('/api/profile', { onboarding_complete: true });
+  hideOnboarding();
+  showFeedback('Setup skipped — you can update your profile anytime.');
+});
+onboardSkip.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Send button / Enter key
+onboardSendBtn.addEventListener('click', _submitOnboardText);
+onboardSendBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+onboardTextInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); _submitOnboardText(); }
+});
+onboardTextInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Voice mic inside onboarding
+onboardMicBtn.addEventListener('click', () => {
+  if (onboardSpeechRec) { stopOnboardVoice(); return; }
+  startOnboardVoice();
+});
+onboardMicBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Absorb all touches so gesture engine ignores the overlay
+onboardOverlay.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+function startOnboardVoice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  onboardSpeechRec = new SR();
+  onboardSpeechRec.continuous = false;
+  onboardSpeechRec.interimResults = true;
+  onboardSpeechRec.lang = 'en-US';
+  onboardMicBtn.textContent = '🔴';
+
+  onboardSpeechRec.onresult = (e) => {
+    let fin = '', inter = '';
+    for (const r of e.results) {
+      if (r.isFinal) fin += r[0].transcript;
+      else inter += r[0].transcript;
+    }
+    onboardTextInput.value = fin || inter;
+  };
+  onboardSpeechRec.onend = () => {
+    onboardMicBtn.textContent = '🎤';
+    onboardSpeechRec = null;
+    const t = onboardTextInput.value.trim();
+    if (t) { onboardTextInput.value = ''; _sendOnboard(t); }
+  };
+  onboardSpeechRec.onerror = () => {
+    onboardMicBtn.textContent = '🎤';
+    onboardSpeechRec = null;
+  };
+  try { onboardSpeechRec.start(); }
+  catch { onboardMicBtn.textContent = '🎤'; onboardSpeechRec = null; }
+}
+
+function stopOnboardVoice() {
+  if (onboardSpeechRec) {
+    try { onboardSpeechRec.abort(); } catch { /* ignore */ }
+    onboardSpeechRec = null;
+  }
+  onboardMicBtn.textContent = '🎤';
+}
+
 // ── Mode toggle ──────────────────────────────────────────────────
 modeBtns.forEach(btn => {
   btn.addEventListener('click', async () => {
@@ -1829,6 +2010,8 @@ modeBtns.forEach(btn => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'start' }),
       }).catch(() => {});
+      // Check if onboarding is needed
+      checkOnboarding();
     } else {
       agentIndicator.classList.remove('visible');
       stopHeartbeat();

@@ -18,6 +18,7 @@
   --radius: 20px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
+  --keyboard-height: 0px;          /* updated by JS when soft keyboard appears */
 }
 
 html, body {
@@ -132,6 +133,156 @@ html, body {
 }
 
 /* ── Confirm dialog ────────────────────────────────────────────── */
+/* ── Agent onboarding overlay ───────────────────────────────────── */
+#onboard-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.96);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--safe-top) + 16px) 0 calc(var(--safe-bottom) + 16px);
+}
+#onboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+#onboard-title {
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(0, 180, 255, 0.8);
+}
+#onboard-skip {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 8px;
+  -webkit-tap-highlight-color: transparent;
+}
+#onboard-progress {
+  display: flex;
+  gap: 6px;
+  padding: 10px 20px;
+  flex-shrink: 0;
+}
+.ob-step {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.10);
+  transition: color 0.3s, border-color 0.3s, background 0.3s;
+}
+.ob-step.done {
+  color: rgba(0, 200, 100, 0.9);
+  border-color: rgba(0, 200, 100, 0.35);
+  background: rgba(0, 200, 100, 0.08);
+}
+.ob-step.active {
+  color: rgba(0, 180, 255, 0.9);
+  border-color: rgba(0, 180, 255, 0.4);
+  background: rgba(0, 180, 255, 0.08);
+}
+#onboard-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ob-msg {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 15px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ob-msg.agent {
+  background: rgba(0, 150, 255, 0.10);
+  border: 1px solid rgba(0, 150, 255, 0.18);
+  color: var(--text-mid);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+.ob-msg.user {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.85);
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+.ob-msg.thinking {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  align-self: flex-start;
+  padding-left: 4px;
+  animation: ob-fade 1.2s ease-in-out infinite;
+}
+@keyframes ob-fade { 0%,100%{opacity:.4} 50%{opacity:1} }
+#onboard-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+#onboard-mic-btn {
+  width: 44px; height: 44px;
+  border-radius: 10px;
+  background: rgba(0, 150, 255, 0.10);
+  border: 1px solid rgba(0, 150, 255, 0.25);
+  color: rgba(0, 150, 255, 0.8);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+#onboard-mic-btn.listening {
+  background: rgba(0, 150, 255, 0.22);
+  border-color: #0096ff;
+}
+#onboard-text-input {
+  flex: 1;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 15px;
+  padding: 10px 14px;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#onboard-text-input::placeholder { color: var(--text-dim); }
+#onboard-send-btn {
+  width: 44px; height: 44px;
+  border-radius: 10px;
+  background: rgba(0, 150, 255, 0.15);
+  border: 1px solid rgba(0, 150, 255, 0.3);
+  color: rgba(0, 150, 255, 0.9);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+#onboard-send-btn:active, #onboard-mic-btn:active { opacity: 0.6; }
+
 #confirm-dialog {
   position: fixed;
   bottom: calc(var(--safe-bottom) + 80px);
@@ -168,7 +319,7 @@ html, body {
 /* ── Hint (static swipe instructions — very bottom) ───────────── */
 #hint {
   position: fixed;
-  bottom: calc(var(--safe-bottom) + 14px);
+  bottom: calc(var(--safe-bottom) + 80px);   /* clears the bottom pill bar */
   left: 0; right: 0;
   text-align: center;
   font-size: 10px;
@@ -181,9 +332,9 @@ html, body {
 /* ── Message display — bottom-half transient messages ─────────── */
 #msg-display {
   position: fixed;
-  left: 7vw; right: 7vw;
-  top: 55%;
-  bottom: calc(var(--safe-bottom) + 44px);
+  left: 5vw; right: 5vw;
+  top: 35%;
+  bottom: calc(var(--safe-bottom) + 90px);  /* above the pill bar */
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -194,16 +345,13 @@ html, body {
 }
 #msg-display.visible { opacity: 1; }
 #msg-display-text {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 400;
-  line-height: 1.7;
+  line-height: 1.75;
   color: var(--text-mid);
   text-align: center;
   white-space: pre-wrap;
   word-break: break-word;
-  /* Soft fade at top so long messages dissolve upward */
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 30%);
 }
 
 /* ── Processing label ─────────────────────────────────────────── */
@@ -506,26 +654,30 @@ html, body {
   transition: opacity 0.2s;
 }
 
-/* Send button — floating bottom-right when typing */
+/* Tasks / Send pill — bottom-right, always visible */
 #send-btn {
   position: fixed;
-  bottom: calc(var(--safe-bottom) + 28px);
-  right: 28px;
-  width: 52px; height: 52px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: none;
-  color: #fff;
-  font-size: 20px;
+  bottom: calc(var(--safe-bottom) + 16px + var(--keyboard-height));
+  right: 12px;
+  width: calc(50% - 18px);
+  height: 48px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.11);
+  color: rgba(255,255,255,0.50);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s, transform 0.15s;
+  gap: 6px;
+  opacity: 1;
+  pointer-events: auto;
+  transition: bottom 0.18s ease, opacity 0.15s;
   z-index: 7;
+  -webkit-tap-highlight-color: transparent;
 }
-#send-btn.visible { opacity: 1; pointer-events: auto; }
-#send-btn:active  { opacity: 0.7; transform: scale(0.90); }
+#send-btn:active { opacity: 0.55; }
 
 /* Hidden textarea — captures keyboard, invisible */
 #input-panel {
@@ -1061,30 +1213,32 @@ html, body {
 }
 #keyboard-btn:active { color: var(--text); border-color: rgba(255,255,255,0.3); }
 
-/* Small mic toggle shown in keyboard mode — bottom-left */
+/* Speak pill — bottom-left, always visible */
 #mic-btn-small {
   position: fixed;
-  bottom: calc(var(--safe-bottom) + 28px);
-  left: 28px;
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  background: rgba(0, 150, 255, 0.10);
-  border: 1px solid rgba(0, 150, 255, 0.25);
-  color: rgba(0, 150, 255, 0.7);
-  font-size: 20px;
+  bottom: calc(var(--safe-bottom) + 16px + var(--keyboard-height));
+  left: 12px;
+  width: calc(50% - 18px);
+  height: 48px;
+  border-radius: 12px;
+  background: rgba(0, 150, 255, 0.09);
+  border: 1px solid rgba(0, 150, 255, 0.28);
+  color: rgba(0, 150, 255, 0.80);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s;
+  gap: 6px;
+  opacity: 1;
+  pointer-events: auto;
+  transition: bottom 0.18s ease, opacity 0.15s;
   z-index: 7;
   -webkit-tap-highlight-color: transparent;
 }
-#mic-btn-small.visible { opacity: 1; pointer-events: auto; }
-#mic-btn-small:active   { opacity: 0.6; }
+#mic-btn-small:active { opacity: 0.55; }
 
 /* ── Notification card ───────────────────────────────────────────── */
 #notif-card {
