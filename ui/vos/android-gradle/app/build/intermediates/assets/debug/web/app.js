@@ -234,6 +234,7 @@ function showToolBadge(toolName) {
     get_contact_profile: '🤝', add_relationship_note: '📝',
     log_interaction: '✅', get_relationship_health: '💚',
     suggest_social_outreach: '💌',
+    run_shell: '⌨️', get_bridge_setup: '🔧',
   };
   badge.textContent = `${icons[toolName] || '⚙️'} ${toolName.replace(/_/g, ' ')}`;
   responseScroll.insertBefore(badge, responseText);
@@ -2077,6 +2078,49 @@ function showHeartbeatNotice(text) {
   showMsgDisplay(text, 7000);
 }
 
+// ── Termux bridge panel ──────────────────────────────────────────
+const bridgeStatusEl       = document.getElementById('bridge-status');
+const bridgeSetupBtn       = document.getElementById('bridge-setup-btn');
+const bridgeInstructions   = document.getElementById('bridge-instructions');
+
+async function checkBridgeStatus() {
+  try {
+    const data = await fetch('/api/bridge/status').then(r => r.json());
+    if (bridgeStatusEl) {
+      bridgeStatusEl.textContent = data.ready ? 'dir ready' : 'not ready';
+      bridgeStatusEl.style.color = data.ready ? 'var(--accent)' : 'rgba(255,255,255,0.4)';
+    }
+  } catch { if (bridgeStatusEl) bridgeStatusEl.textContent = 'unavailable'; }
+}
+
+bridgeSetupBtn?.addEventListener('click', async () => {
+  if (bridgeInstructions.style.display !== 'none') {
+    bridgeInstructions.style.display = 'none';
+    bridgeSetupBtn.textContent = 'Setup';
+    return;
+  }
+  bridgeSetupBtn.textContent = 'Loading…';
+  try {
+    const text = await fetch('/api/bridge/setup').then(r => r.text());
+    // Show the shell script in a copyable pre block
+    bridgeInstructions.innerHTML = '';
+    const pre = document.createElement('pre');
+    pre.className = 'bridge-script';
+    pre.textContent = text;
+    bridgeInstructions.appendChild(pre);
+    const hint = document.createElement('div');
+    hint.className = 'bridge-hint';
+    hint.textContent = 'Copy to ~/voiceos-bridge.sh in Termux, then: bash ~/voiceos-bridge.sh';
+    bridgeInstructions.appendChild(hint);
+    bridgeInstructions.style.display = '';
+    bridgeSetupBtn.textContent = 'Hide';
+  } catch {
+    bridgeSetupBtn.textContent = 'Setup';
+  }
+});
+bridgeSetupBtn?.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+bridgeInstructions?.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
 // ── Boot ────────────────────────────────────────────────────────
 async function boot() {
   initCanvas();
@@ -2086,6 +2130,7 @@ async function boot() {
   fetch('/api/apps').then(r => r.json()).then(apps => { allApps = apps; }).catch(() => {});
   await loadTaskCache();
   resetIdleTimer();
+  checkBridgeStatus();
 }
 
 boot();

@@ -26,159 +26,164 @@
 16    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 16-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:10:5-81
 16-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:10:22-78
-17    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-17-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:11:5-76
-17-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:11:22-73
-18    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-18-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:12:5-81
-18-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:12:22-78
-19    <uses-permission android:name="android.permission.READ_CALENDAR" />
-19-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:13:5-72
-19-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:13:22-69
-20    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
-20-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:14:5-73
-20-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:14:22-70
-21    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
-21-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:15:5-78
-21-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:15:22-75
-22    <uses-permission android:name="android.permission.CHANGE_AUDIO_SETTINGS" />
-22-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:16:5-80
-22-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:16:22-77
-23    <uses-permission android:name="android.permission.READ_CALL_LOG" />
-23-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:17:5-72
-23-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:17:22-69
-24    <uses-permission android:name="android.permission.READ_SMS" />
-24-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:18:5-67
-24-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:18:22-64
-25    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-25-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:11:5-76
-25-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:11:22-73
-26    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-26-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:20:5-76
-26-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:20:22-73
-27    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
-27-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:21:5-22:47
-27-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:21:22-70
-28    <uses-permission
-28-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:23:5-24:38
-29        android:name="android.permission.BLUETOOTH"
-29-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:23:22-65
-30        android:maxSdkVersion="30" />
-30-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:24:9-35
-31    <uses-permission
-31-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:25:5-26:38
-32        android:name="android.permission.BLUETOOTH_ADMIN"
-32-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:25:22-71
-33        android:maxSdkVersion="30" />
-33-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:26:9-35
-34    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-34-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:27:5-76
-34-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:27:22-73
-35    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
-35-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:28:5-85
-35-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:28:22-82
-36    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-36-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:29:5-75
-36-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:29:22-72
-37
-38    <permission
-38-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:22:5-24:47
-39        android:name="com.balteklabs.voiceos.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
-39-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:23:9-81
-40        android:protectionLevel="signature" />
-40-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:24:9-44
-41
-42    <uses-permission android:name="com.balteklabs.voiceos.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
-42-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:26:5-97
-42-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:26:22-94
-43
-44    <application
-44-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:31:5-64:19
-45        android:allowBackup="false"
-45-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:32:9-36
-46        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
-46-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:28:18-86
-47        android:debuggable="true"
-48        android:extractNativeLibs="false"
-49        android:label="@string/app_name"
-49-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:33:9-41
-50        android:supportsRtl="true"
-50-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:34:9-35
-51        android:theme="@style/Theme.VoiceOS"
-51-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:35:9-45
-52        android:usesCleartextTraffic="true" >
-52-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:36:9-44
-53
-54        <!-- Notification listener service — user must grant access via system settings -->
-55        <service
-55-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:39:9-46:19
-56            android:name="com.balteklabs.voiceos.VoiceOSNotificationService"
-56-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:40:13-55
-57            android:exported="true"
-57-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:41:13-36
-58            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" >
-58-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:42:13-87
-59            <intent-filter>
-59-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:43:13-45:29
-60                <action android:name="android.service.notification.NotificationListenerService" />
-60-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:44:17-99
-60-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:44:25-96
-61            </intent-filter>
-62        </service>
-63
-64        <activity
-64-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:48:9-62:20
-65            android:name="com.balteklabs.voiceos.MainActivity"
-65-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:49:13-41
-66            android:exported="true"
-66-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:50:13-36
-67            android:launchMode="singleTask"
-67-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:51:13-44
-68            android:screenOrientation="portrait"
-68-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:52:13-49
-69            android:windowSoftInputMode="adjustResize" >
-69-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:53:13-55
-70
-71            <!-- Register as the default home / launcher -->
-72            <intent-filter>
-72-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:56:13-61:29
-73                <action android:name="android.intent.action.MAIN" />
-73-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:57:17-69
-73-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:57:25-66
-74
-75                <category android:name="android.intent.category.HOME" />
-75-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:58:17-73
-75-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:58:27-70
-76                <category android:name="android.intent.category.DEFAULT" />
-76-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:59:17-76
-76-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:59:27-73
-77                <category android:name="android.intent.category.LAUNCHER" />
-77-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:60:17-77
-77-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:60:27-74
-78            </intent-filter>
-79        </activity>
-80
-81        <provider
-81-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:24:9-32:20
-82            android:name="androidx.startup.InitializationProvider"
-82-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:25:13-67
-83            android:authorities="com.balteklabs.voiceos.androidx-startup"
-83-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:26:13-68
-84            android:exported="false" >
-84-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:27:13-37
-85            <meta-data
-85-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:29:13-31:52
-86                android:name="androidx.emoji2.text.EmojiCompatInitializer"
-86-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:30:17-75
-87                android:value="androidx.startup" />
-87-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:31:17-49
-88            <meta-data
-88-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\Admin\.gradle\caches\8.10\transforms\4aea998f0324bb4bcc3cbef926ee8141\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:31:13-33:52
-89                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
-89-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\Admin\.gradle\caches\8.10\transforms\4aea998f0324bb4bcc3cbef926ee8141\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:32:17-78
-90                android:value="androidx.startup" />
-90-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\Admin\.gradle\caches\8.10\transforms\4aea998f0324bb4bcc3cbef926ee8141\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:33:17-49
-91        </provider>
-92    </application>
-93
-94</manifest>
+17    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+17-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:11:5-12:40
+17-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:11:22-79
+18    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+18-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:13:5-76
+18-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:13:22-73
+19    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+19-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:14:5-81
+19-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:14:22-78
+20    <uses-permission android:name="android.permission.READ_CALENDAR" />
+20-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:15:5-72
+20-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:15:22-69
+21    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+21-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:16:5-73
+21-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:16:22-70
+22    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+22-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:17:5-78
+22-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:17:22-75
+23    <uses-permission android:name="android.permission.CHANGE_AUDIO_SETTINGS" />
+23-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:18:5-80
+23-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:18:22-77
+24    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+24-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:19:5-72
+24-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:19:22-69
+25    <uses-permission android:name="android.permission.READ_SMS" />
+25-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:20:5-67
+25-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:20:22-64
+26    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+26-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:13:5-76
+26-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:13:22-73
+27    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+27-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:22:5-76
+27-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:22:22-73
+28    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+28-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:23:5-24:47
+28-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:23:22-70
+29    <uses-permission
+29-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:25:5-26:38
+30        android:name="android.permission.BLUETOOTH"
+30-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:25:22-65
+31        android:maxSdkVersion="30" />
+31-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:26:9-35
+32    <uses-permission
+32-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:27:5-28:38
+33        android:name="android.permission.BLUETOOTH_ADMIN"
+33-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:27:22-71
+34        android:maxSdkVersion="30" />
+34-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:28:9-35
+35    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+35-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:29:5-76
+35-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:29:22-73
+36    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+36-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:30:5-85
+36-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:30:22-82
+37    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+37-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:31:5-75
+37-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:31:22-72
+38
+39    <permission
+39-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:22:5-24:47
+40        android:name="com.balteklabs.voiceos.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+40-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:23:9-81
+41        android:protectionLevel="signature" />
+41-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:24:9-44
+42
+43    <uses-permission android:name="com.balteklabs.voiceos.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+43-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:26:5-97
+43-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:26:22-94
+44
+45    <application
+45-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:33:5-67:19
+46        android:allowBackup="false"
+46-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:34:9-36
+47        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+47-->[androidx.core:core:1.10.1] C:\Users\Admin\.gradle\caches\8.10\transforms\0e1717944334fec3bf4963c5e3755219\transformed\core-1.10.1\AndroidManifest.xml:28:18-86
+48        android:debuggable="true"
+49        android:extractNativeLibs="false"
+50        android:label="@string/app_name"
+50-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:35:9-41
+51        android:requestLegacyExternalStorage="true"
+51-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:39:9-52
+52        android:supportsRtl="true"
+52-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:36:9-35
+53        android:theme="@style/Theme.VoiceOS"
+53-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:37:9-45
+54        android:usesCleartextTraffic="true" >
+54-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:38:9-44
+55
+56        <!-- Notification listener service — user must grant access via system settings -->
+57        <service
+57-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:42:9-49:19
+58            android:name="com.balteklabs.voiceos.VoiceOSNotificationService"
+58-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:43:13-55
+59            android:exported="true"
+59-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:44:13-36
+60            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" >
+60-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:45:13-87
+61            <intent-filter>
+61-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:46:13-48:29
+62                <action android:name="android.service.notification.NotificationListenerService" />
+62-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:47:17-99
+62-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:47:25-96
+63            </intent-filter>
+64        </service>
+65
+66        <activity
+66-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:51:9-65:20
+67            android:name="com.balteklabs.voiceos.MainActivity"
+67-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:52:13-41
+68            android:exported="true"
+68-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:53:13-36
+69            android:launchMode="singleTask"
+69-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:54:13-44
+70            android:screenOrientation="portrait"
+70-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:55:13-49
+71            android:windowSoftInputMode="adjustResize" >
+71-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:56:13-55
+72
+73            <!-- Register as the default home / launcher -->
+74            <intent-filter>
+74-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:59:13-64:29
+75                <action android:name="android.intent.action.MAIN" />
+75-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:60:17-69
+75-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:60:25-66
+76
+77                <category android:name="android.intent.category.HOME" />
+77-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:61:17-73
+77-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:61:27-70
+78                <category android:name="android.intent.category.DEFAULT" />
+78-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:62:17-76
+78-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:62:27-73
+79                <category android:name="android.intent.category.LAUNCHER" />
+79-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:63:17-77
+79-->C:\Users\Admin\Dev\Kernal_Claw\ui\vos\android-gradle\app\src\main\AndroidManifest.xml:63:27-74
+80            </intent-filter>
+81        </activity>
+82
+83        <provider
+83-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:24:9-32:20
+84            android:name="androidx.startup.InitializationProvider"
+84-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:25:13-67
+85            android:authorities="com.balteklabs.voiceos.androidx-startup"
+85-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:26:13-68
+86            android:exported="false" >
+86-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:27:13-37
+87            <meta-data
+87-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:29:13-31:52
+88                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+88-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:30:17-75
+89                android:value="androidx.startup" />
+89-->[androidx.emoji2:emoji2:1.2.0] C:\Users\Admin\.gradle\caches\8.10\transforms\e13bdee3024c8b2f7f0e4ae64dcca63a\transformed\emoji2-1.2.0\AndroidManifest.xml:31:17-49
+90            <meta-data
+90-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\Admin\.gradle\caches\8.10\transforms\4aea998f0324bb4bcc3cbef926ee8141\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:31:13-33:52
+91                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+91-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\Admin\.gradle\caches\8.10\transforms\4aea998f0324bb4bcc3cbef926ee8141\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:32:17-78
+92                android:value="androidx.startup" />
+92-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\Admin\.gradle\caches\8.10\transforms\4aea998f0324bb4bcc3cbef926ee8141\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:33:17-49
+93        </provider>
+94    </application>
+95
+96</manifest>

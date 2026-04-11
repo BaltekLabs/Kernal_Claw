@@ -2,10 +2,15 @@ package com.balteklabs.voiceos
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
 import android.webkit.WebResourceRequest
@@ -82,6 +87,22 @@ class MainActivity : Activity() {
         ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }.toTypedArray()
         if (needed.isNotEmpty()) requestPermissions(needed, 1001)
 
+        // Android 11+: request All Files Access so the Termux bridge can use /sdcard/
+        // Both startActivity calls are wrapped independently — either can throw
+        // ActivityNotFoundException on some OEM ROMs, which would crash onCreate and
+        // prevent the server from starting.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:$packageName")
+                })
+            } catch (_: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                } catch (_: Exception) { /* no handler on this device — skip */ }
+            }
+        }
+
         // Start server then load page
         startServer()
     }
@@ -90,6 +111,7 @@ class MainActivity : Activity() {
         try {
             server = VoiceOSServer(applicationContext, port)
             server!!.start()
+            server!!.warmupOllama()
             // Give the server a moment to bind, then load the page
             handler.postDelayed({
                 webView.loadUrl("http://127.0.0.1:$port/")
@@ -123,6 +145,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        server?.stopWarmup()
         server?.stop()
     }
 }

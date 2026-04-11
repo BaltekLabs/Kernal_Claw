@@ -134,6 +134,101 @@ class VoiceOSServer(
         return sb.toString().trimEnd()
     }
 
+    // ── Termux bridge ─────────────────────────────────────────────
+    private val bridgeDir: java.io.File by lazy {
+        java.io.File(android.os.Environment.getExternalStorageDirectory(), "voiceos_bridge")
+    }
+    private val BRIDGE_TIMEOUT_MS = 30_000L
+
+    private fun isBridgeReady(): Boolean = try {
+        if (!bridgeDir.exists()) bridgeDir.mkdirs()
+        bridgeDir.exists() && bridgeDir.canWrite()
+    } catch (_: Exception) { false }
+
+    /** Read-only commands run immediately; anything else is queued for user approval. */
+    private fun isReadOnlyShellCmd(cmd: String): Boolean {
+        val c = cmd.trim().lowercase()
+        return listOf(
+            "ls", "cat ", "head ", "tail ", "grep ", "find ", "echo ", "printf ",
+            "pwd", "whoami", "date", "uname", "which ", "type ",
+            "git status", "git log", "git diff", "git branch", "git remote",
+            "git show", "git stash list", "git describe", "git tag",
+            "ps ", "df ", "du ", "free", "env", "printenv",
+            "wc ", "sort ", "uniq ", "cut ", "tr ", "awk ", "sed -n",
+            "python3 -c", "python -c", "node -e", "node -p",
+            "pip list", "pip show", "npm list", "npm ls",
+            "ll", "la", "cat\t"
+        ).any { c.startsWith(it) }
+    }
+
+    /** Write command to bridge dir, block until Termux daemon writes result, return output. */
+    private fun executeBridgeCommand(cmd: String, workdir: String): String {
+        return try {
+            if (!isBridgeReady())
+                return "Bridge dir not accessible. Run termux-setup-storage in Termux first, then start the bridge daemon."
+            val cmdFile    = java.io.File(bridgeDir, "cmd.txt")
+            val wdirFile   = java.io.File(bridgeDir, "workdir.txt")
+            val doneFile   = java.io.File(bridgeDir, "done")
+            val resultFile = java.io.File(bridgeDir, "result.txt")
+            val exitFile   = java.io.File(bridgeDir, "exit_code.txt")
+
+            // Clear previous result sentinel
+            doneFile.delete(); resultFile.delete(); exitFile.delete()
+
+            // Issue the command
+            wdirFile.writeText(workdir.ifBlank { "~" })
+            cmdFile.writeText(cmd)
+
+            // Wait for daemon to signal completion
+            val deadline = System.currentTimeMillis() + BRIDGE_TIMEOUT_MS
+            while (System.currentTimeMillis() < deadline) {
+                if (doneFile.exists()) {
+                    val out  = try { resultFile.readText().trim() } catch (_: Exception) { "" }
+                    val code = try { exitFile.readText().trim().toIntOrNull() ?: 0 } catch (_: Exception) { 0 }
+                    doneFile.delete()
+                    return if (code == 0) out.ifBlank { "(no output)" }
+                           else "Exit $code:\n$out"
+                }
+                Thread.sleep(500)
+            }
+            "Timeout (${BRIDGE_TIMEOUT_MS / 1000}s) — is the bridge daemon running in Termux?"
+        } catch (e: Exception) { "Bridge error: ${e.message}" }
+    }
+
+    private fun toolRunShell(args: Map<String, Any>): String {
+        val cmd     = args["command"] as? String ?: return "Missing: command"
+        val workdir = args["workdir"] as? String ?: "~"
+        return if (isReadOnlyShellCmd(cmd)) {
+            executeBridgeCommand(cmd, workdir)
+        } else {
+            // Mutation — queue for user approval; executes on approval
+            actionQueue.add(
+                type    = "run_shell",
+                params  = mapOf("command" to cmd, "workdir" to workdir),
+                preview = "${if (workdir != "~") "[$workdir] " else ""}$cmd"
+            )
+            "Mutation queued for approval: `$cmd`\nUser will see it in the pending actions queue."
+        }
+    }
+
+    private fun toolGetBridgeSetup(): String {
+        val dirPath = try { bridgeDir.absolutePath } catch (_: Exception) { "/sdcard/voiceos_bridge" }
+        return """Termux Bridge Setup
+===================
+1. Open Termux and run: termux-setup-storage
+2. Run: curl http://localhost:8741/api/bridge/setup > ~/voiceos-bridge.sh
+   (while VoiceOS is open and the server is running)
+3. Start daemon: bash ~/voiceos-bridge.sh
+   Or background: nohup bash ~/voiceos-bridge.sh > ~/voiceos-bridge.log 2>&1 &
+
+Bridge dir: $dirPath
+Status: ${if (isBridgeReady()) "directory accessible" else "not accessible — run termux-setup-storage first"}
+
+Once running, use run_shell to execute commands from VoiceOS.
+Read-only commands (ls, git status, cat…) run immediately.
+Mutation commands (git commit, rm, pip install…) are queued for your approval."""
+    }
+
     // ── Onboarding conversation context (separate from main agent) ──
     private val onboardingContext = ConversationContext(maxMessages = 40)
 
@@ -169,13 +264,17 @@ Start: introduce yourself in one sentence, then ask for their name."""
 
     private val heartbeat by lazy {
         ProbeHeartbeat { probe ->
-            val toolDefs = if (probe.toolNames.isEmpty()) allTools
-                           else allTools.filter { it.name in probe.toolNames }
+            // Build the prompt — initiative probes may return "[idle]" when profile has no data
+            val profile  = loadProfile()
+            val prompt   = probe.buildPrompt(profile)
+            if (prompt == "[idle]") return@ProbeHeartbeat null
+
+            val toolDefs  = if (probe.toolNames.isEmpty()) allTools
+                            else allTools.filter { it.name in probe.toolNames }
             val liveCtx   = try { buildLiveContext(minimal = true) } catch (_: Exception) { "" }
-            // Heartbeat always gets the full profile context so probes are goal-aware
             val sysPrompt = agentSystemPrompt(liveCtx)
             val msgs = mutableListOf<Map<String, Any>>(
-                mapOf("role" to "user", "content" to probe.prompt)
+                mapOf("role" to "user", "content" to prompt)
             )
             val sb = StringBuilder()
             for (step in 0..2) {
@@ -199,6 +298,12 @@ Start: introduce yourself in one sentence, then ask for their name."""
             hb.register(*ProbeHeartbeat.defaultProbes())
         }
     }
+
+    // ── Per-request streaming writer (Ollama token forwarding) ───
+    /** Holds the active pipe writer for the current agent request thread.
+     *  ollamaWithTools writes tokens here directly so the frontend sees them
+     *  progressively rather than waiting for the full response. */
+    private val streamingWriter = ThreadLocal<java.io.Writer?>()
 
     // ── Unified LLM dispatch ──────────────────────────────────────
     private fun callLLMWithTools(
@@ -420,7 +525,21 @@ Start: introduce yourself in one sentence, then ask for their name."""
                 "schedule"            to mapOf("type" to "object",  "description" to "Work schedule: {timezone,work_start,work_end}"),
                 "focus_areas"         to mapOf("type" to "array",   "description" to "Main focus areas e.g. ['project development','social networking']"),
                 "onboarding_complete" to mapOf("type" to "boolean", "description" to "Set true when profile collection is done")
-            ), emptyList())
+            ), emptyList()),
+
+        // ── Termux bridge ─────────────────────────────────────────
+        ToolDef("run_shell",
+            "Run a shell command via the Termux bridge. " +
+            "Read-only commands (ls, git status, cat, grep…) execute immediately. " +
+            "Mutation commands (git commit, rm, pip install…) are queued for user approval. " +
+            "Returns stdout+stderr. Requires the VoiceOS bridge daemon to be running in Termux.",
+            mapOf(
+                "command" to mapOf("type" to "string",  "description" to "Shell command to run, e.g. 'git status --short' or 'ls ~/Dev'"),
+                "workdir" to mapOf("type" to "string",  "description" to "Working directory, e.g. ~/Dev/myproject (default: ~)")
+            ), listOf("command")),
+        ToolDef("get_bridge_setup",
+            "Get setup instructions and current status for the Termux bridge. Call this when the user asks how to connect Termux, or when run_shell times out.",
+            emptyMap(), emptyList())
     )
 
     // ════════════════════════════════════════════════════════════════
@@ -1101,6 +1220,12 @@ Always combine social context with communication tools (send_sms, call_contact) 
             uri == "/api/profile"    && session.method == Method.GET  -> handleGetProfile()
             uri == "/api/profile"    && session.method == Method.POST -> handleSaveProfile(session)
             uri == "/api/onboard"    && session.method == Method.POST -> handleOnboard(session)
+            uri == "/api/bridge/setup" -> handleBridgeSetup()
+            uri == "/api/bridge/status" -> jsonResponse(mapOf(
+                "ready"    to isBridgeReady(),
+                "dir"      to (try { bridgeDir.absolutePath } catch (_: Exception) { "" }),
+                "has_daemon" to java.io.File(bridgeDir, "done").let { false }  // daemon sets done, we just check dir
+            ))
 
             uri == "/api/crm/contacts"  && session.method == Method.GET    -> handleCrmContacts(session)
             uri == "/api/crm/note"      && session.method == Method.POST   -> handleCrmAddNote(session)
@@ -1226,12 +1351,13 @@ Always combine social context with communication tools (send_sms, call_contact) 
         Thread {
             try {
                 pipeOut.writer().use { writer ->
-                    val liveCtx = try { buildLiveContext() } catch (_: Exception) { "" }
+                    val minimal = activeProvider == "ollama"
+                    val liveCtx = try { buildLiveContext(minimal = minimal) } catch (_: Exception) { "" }
                     engine.run(
-                        userMsg  = userMsg,
-                        liveCtx  = liveCtx,
-                        writer   = writer,
-                        gson     = gson,
+                        userMsg     = userMsg,
+                        liveCtx     = liveCtx,
+                        writer      = writer,
+                        gson        = gson,
                         isAnthropic = activeProvider == "anthropic"
                     )
                 }
@@ -1273,6 +1399,61 @@ Always combine social context with communication tools (send_sms, call_contact) 
     fun startHeartbeat() { heartbeat.start() }
     fun stopHeartbeat()  { heartbeat.stop() }
 
+    // ── Ollama model keep-alive ────────────────────────────────────────────
+    // Pings Ollama every 4 minutes so the model never hits the 5-minute
+    // default keepalive expiry and gets unloaded between user requests.
+    @Volatile private var ollamaPingRunning = false
+    private var ollamaPingThread: Thread? = null
+
+    /** Start background warmup + periodic keep-alive pings for Ollama. */
+    fun warmupOllama() {
+        if (activeProvider != "ollama") return
+        ollamaPingRunning = true
+        ollamaPingThread = Thread {
+            // Initial delay — let the server finish binding before first load
+            Thread.sleep(2_000)
+            while (ollamaPingRunning) {
+                ollamaPing()
+                // Ping every 4 minutes — shorter than Ollama's 5-minute default keepalive
+                var waited = 0
+                while (ollamaPingRunning && waited < 240_000) {
+                    Thread.sleep(5_000)
+                    waited += 5_000
+                }
+            }
+        }.apply { isDaemon = true; name = "ollama-keepalive" }
+        ollamaPingThread!!.start()
+    }
+
+    fun stopWarmup() {
+        ollamaPingRunning = false
+        ollamaPingThread?.interrupt()
+        ollamaPingThread = null
+    }
+
+    private fun ollamaPing() {
+        try {
+            val conn = java.net.URL("${ollamaUrl.trimEnd('/')}/api/generate")
+                .openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Connection", "close")
+            conn.doOutput = true
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 600_000   // model load from cold can take several minutes
+            conn.outputStream.use { os ->
+                os.write(gson.toJson(mapOf(
+                    "model"      to activeModel,
+                    "prompt"     to "hi",
+                    "stream"     to true,
+                    "keep_alive" to "10m"
+                )).toByteArray())
+            }
+            // Drain NDJSON stream lines and discard — we only need the model to load
+            conn.inputStream.bufferedReader().use { r -> r.forEachLine { } }
+        } catch (_: Exception) {}
+    }
+
     private fun handleHeartbeatControl(session: IHTTPSession): Response {
         val map = parseBody(session)
         when (map["action"] as? String) {
@@ -1307,6 +1488,15 @@ Always combine social context with communication tools (send_sms, call_contact) 
     private fun executeQueuedAction(action: QueuedAction) {
         try {
             when (action.type) {
+                "run_shell" -> {
+                    val cmd     = action.params["command"] ?: return
+                    val workdir = action.params["workdir"] ?: "~"
+                    Thread {
+                        val out     = executeBridgeCommand(cmd, workdir)
+                        val preview = cmd.take(60)
+                        heartbeat.pushResult("Shell ✓ `$preview`\n${out.take(300)}")
+                    }.apply { isDaemon = true; start() }
+                }
                 "draft_email" -> {
                     val intent = Intent(Intent.ACTION_SENDTO).apply {
                         data = Uri.parse("mailto:")
@@ -1386,6 +1576,9 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 "remember"              -> toolRemember(args)
                 "get_user_profile"      -> toolGetUserProfile()
                 "update_user_profile"   -> toolUpdateUserProfile(args)
+                // Termux bridge
+                "run_shell"             -> toolRunShell(args)
+                "get_bridge_setup"      -> toolGetBridgeSetup()
                 // Social CRM
                 "get_contact_profile"     -> toolGetContactProfile(args)
                 "add_relationship_note"   -> toolAddRelationshipNote(args)
@@ -1945,15 +2138,22 @@ Always combine social context with communication tools (send_sms, call_contact) 
         toolDefs: List<ToolDef>,
         sysPrompt: String
     ): AgentResult {
-        val toolListStr = toolDefs.joinToString("\n") { t ->
-            val params = t.params.entries.joinToString(", ") { (k, v) ->
-                @Suppress("UNCHECKED_CAST")
-                "$k: ${(v as? Map<String, Any>)?.get("type") ?: "string"}"
-            }
-            "- ${t.name}($params): ${t.description}"
+        // Bypass the full cloud-model system prompt for Ollama.
+        // The full prompt (profile + live context + skill suffix + tool descriptions)
+        // can be 500–1000 tokens — fine for a cloud API, but kills prefill speed on-device.
+        // Instead, give the local model a 3-line prompt + compact tool names only.
+        val userName = (loadProfile()["name"] as? String)?.takeIf { it.isNotBlank() }?.let { ", user is $it" } ?: ""
+        val toolListStr = toolDefs.joinToString(" | ") { t ->
+            val params = t.params.keys.joinToString(",")
+            if (params.isEmpty()) t.name else "${t.name}($params)"
         }
-        val systemPrompt = "$sysPrompt\n\nYou have access to tools. To use one output:\n<tool_call>{\"name\": \"tool_name\", \"args\": {\"param\": \"value\"}}</tool_call>\n\nAvailable tools:\n$toolListStr\n\nAfter tool results, continue reasoning. Give final answer without tool_call tags."
-        val histStr = messages.joinToString("\n") { msg ->
+        val systemPrompt = "You are VoiceOS, an Android assistant$userName. Be concise.\n" +
+            "To call a tool: <tool_call>{\"name\":\"tool\",\"args\":{...}}</tool_call>\n" +
+            "Tools: $toolListStr\n" +
+            "After tool results give a plain-text answer. No <tool_call> in final answer."
+        // Limit history to the 4 most-recent messages for local models —
+        // older turns inflate prefill tokens without helping the current query.
+        val histStr = messages.takeLast(4).joinToString("\n") { msg ->
             val role    = msg["role"] as? String ?: "user"
             val content = when (val c = msg["content"]) {
                 is String -> c
@@ -1966,30 +2166,46 @@ Always combine social context with communication tools (send_sms, call_contact) 
             val conn = URL("${ollamaUrl.trimEnd('/')}/api/generate").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Connection", "close")
             conn.doOutput = true; conn.connectTimeout = 8_000; conn.readTimeout = 300_000
             conn.outputStream.use { it.write(gson.toJson(mapOf(
-                "model" to activeModel, "prompt" to "$systemPrompt\n\n$histStr\nASSISTANT:", "stream" to false
+                "model"      to activeModel,
+                "prompt"     to "$systemPrompt\n\n$histStr\nASSISTANT:",
+                "stream"     to true,
+                "keep_alive" to "30m"
             )).toByteArray()) }
             if (conn.responseCode != 200) {
                 val err = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP ${conn.responseCode}"
                 return AgentResult(ollamaHint(err), toolCalls = emptyList(), done = true)
             }
-            @Suppress("UNCHECKED_CAST")
-            val obj  = gson.fromJson(conn.inputStream.bufferedReader().readText(), Map::class.java) as Map<String, Any>
-            val full = obj["response"] as? String ?: ""
+            // stream=true: read NDJSON lines and accumulate tokens
+            val sb = StringBuilder()
+            conn.inputStream.bufferedReader().forEachLine { line ->
+                if (line.isBlank()) return@forEachLine
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    val obj = gson.fromJson(line, Map::class.java) as Map<String, Any>
+                    (obj["response"] as? String)?.let { sb.append(it) }
+                } catch (_: Exception) {}
+            }
+            val full = sb.toString().trim()
+
             val matches = Regex("""<tool_call>(.*?)</tool_call>""", RegexOption.DOT_MATCHES_ALL).findAll(full).toList()
-            if (matches.isEmpty()) return AgentResult(full.trim(), toolCalls = emptyList(), done = true)
+            if (matches.isEmpty()) {
+                return AgentResult(full, toolCalls = emptyList(), done = true)
+            }
             val calls = matches.mapNotNull { m ->
                 try {
                     @Suppress("UNCHECKED_CAST")
-                    val tc = gson.fromJson(m.groupValues[1].trim(), Map::class.java) as Map<String, Any>
+                    val tc   = gson.fromJson(m.groupValues[1].trim(), Map::class.java) as Map<String, Any>
                     val name = tc["name"] as? String ?: return@mapNotNull null
                     @Suppress("UNCHECKED_CAST")
                     val args = tc["args"] as? Map<String, Any> ?: emptyMap()
                     ToolCall(id = "ollama_${System.currentTimeMillis()}", name = name, args = args)
                 } catch (_: Exception) { null }
             }
-            AgentResult(full.substringBefore("<tool_call>").trim(), rawContent = full, toolCalls = calls, done = false)
+            AgentResult(full.substringBefore("<tool_call>").trim(), rawContent = full,
+                toolCalls = calls, done = false)
         } catch (e: Exception) { AgentResult(ollamaHint("${e.javaClass.simpleName}: ${e.message}"), toolCalls = emptyList(), done = true) }
     }
 
@@ -2004,6 +2220,7 @@ Always combine social context with communication tools (send_sms, call_contact) 
         return """You are VoiceOS — an intelligent personal assistant running as the Android launcher on the user's phone.
 You have direct access to the device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, and the web.
 You also have a social relationship layer: use get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, and suggest_social_outreach to help the user maintain their personal network.
+If Termux is installed, use run_shell to execute shell commands, check git repos, run scripts, and inspect files. Read-only commands run immediately; mutations are queued for approval. Use get_bridge_setup if setup is needed.
 Be concise and action-oriented. ALWAYS use tools to answer questions about device state.
 For outgoing actions: draft_email / send_sms / send_whatsapp queue the action for user approval — never open apps directly for these.
 call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
@@ -2053,7 +2270,7 @@ call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
             // Memory
             val notes = prefs.getString("agent_notes", "") ?: ""
             if (notes.isNotBlank()) { sb.appendLine("  Memory:"); notes.lines().takeLast(3).forEach { sb.appendLine("    $it") } }
-            // User profile summary (projects + social goals)
+            // User profile — project names only (full detail is in the system prompt via buildProfileContext)
             val prof = loadProfile()
             if (prof["onboarding_complete"] == true) {
                 @Suppress("UNCHECKED_CAST")
@@ -2061,35 +2278,11 @@ call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
                 if (projects.isNotEmpty()) {
                     sb.appendLine("  Active projects: ${projects.mapNotNull { it["name"] as? String }.joinToString(", ")}")
                 }
-                @Suppress("UNCHECKED_CAST")
-                val social = (prof["social_goals"] as? List<Map<String, Any>>)?.filterIsInstance<Map<String, Any>>() ?: emptyList()
-                if (social.isNotEmpty()) {
-                    val overdue = social.filter { g ->
-                        val person = g["person"] as? String ?: return@filter false
-                        val freqDays = (g["frequency_days"] as? Double)?.toInt() ?: return@filter false
-                        val days = daysSinceLastDeviceContact(person)
-                        days != null && days >= freqDays
-                    }
-                    if (overdue.isNotEmpty()) {
-                        sb.appendLine("  Social goals overdue: ${overdue.mapNotNull { it["person"] as? String }.joinToString(", ")}")
-                    }
-                }
+                // Note: social/CRM nudges are intentionally omitted here.
+                // They require per-contact ContentResolver queries (expensive) and bloat tokens.
+                // The social_nudge heartbeat probe surfaces overdue contacts asynchronously.
+                // The agent can query get_relationship_health / suggest_social_outreach on demand.
             }
-            // Social CRM — relationship nudges
-            try {
-                val rel = loadRelationships()
-                if (rel.isNotEmpty()) {
-                    val drifted = rel.entries.mapNotNull { (key, _) ->
-                        val displayName = key.replaceFirstChar { it.titlecase() }
-                        val days = daysSinceLastDeviceContact(displayName) ?: daysSinceLastDeviceContact(key)
-                        if (days != null && days >= 14) Pair(displayName, days) else null
-                    }.sortedByDescending { it.second }.take(3)
-                    if (drifted.isNotEmpty()) {
-                        sb.appendLine("  Social nudges:")
-                        drifted.forEach { (name, days) -> sb.appendLine("    • $name — ${days}d since last contact") }
-                    }
-                }
-            } catch (_: Exception) {}
             // Pending queue
             val pending = actionQueue.getPending()
             if (pending.isNotEmpty()) {
@@ -2134,9 +2327,10 @@ call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
             mergeProfile(mapOf("onboarding_complete" to false))
         }
 
-        // First turn: agent sends the opening
+        // First turn: agent sends the opening.
+        // Anthropic requires ≥1 message, so inject a silent system-kick message.
         if (userMsg.isBlank() && onboardingContext.messages.isEmpty()) {
-            val msgs  = listOf<Map<String, Any>>()  // empty — system prompt handles the opener
+            val msgs  = listOf(mapOf<String, Any>("role" to "user", "content" to "Begin the onboarding."))
             val tools = allTools.filter { it.name in listOf("update_user_profile", "get_user_profile") }
             val result = callLLMWithTools(msgs, tools, ONBOARD_SYS)
             val reply  = result.text.trim()
@@ -2180,6 +2374,35 @@ call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
         }
 
         return jsonResponse(mapOf("reply" to reply.trim(), "done" to done))
+    }
+
+    // ── Bridge setup — serves the Termux daemon shell script ─────────
+    private fun handleBridgeSetup(): Response {
+        val dirPath = try { bridgeDir.absolutePath } catch (_: Exception) { "/sdcard/voiceos_bridge" }
+        val script = """#!/data/data/com.termux/files/usr/bin/bash
+# VoiceOS Bridge Daemon
+# Generated by VoiceOS — run with: bash ~/voiceos-bridge.sh
+# Background: nohup bash ~/voiceos-bridge.sh > ~/voiceos-bridge.log 2>&1 &
+BRIDGE_DIR="$dirPath"
+mkdir -p "${'$'}BRIDGE_DIR"
+echo "[VoiceOS Bridge] Started. Watching ${'$'}BRIDGE_DIR"
+while true; do
+    if [ -f "${'$'}BRIDGE_DIR/cmd.txt" ]; then
+        CMD=$(cat "${'$'}BRIDGE_DIR/cmd.txt")
+        WDIR=$(cat "${'$'}BRIDGE_DIR/workdir.txt" 2>/dev/null || echo "~")
+        mv "${'$'}BRIDGE_DIR/cmd.txt" "${'$'}BRIDGE_DIR/cmd.txt.lock" 2>/dev/null || { sleep 0.5; continue; }
+        EXPANDED=$(eval echo "${'$'}WDIR" 2>/dev/null || echo "${'$'}HOME")
+        OUT=$(cd "${'$'}EXPANDED" 2>/dev/null && eval "${'$'}CMD" 2>&1 | head -c 8000)
+        CODE=${'$'}?
+        printf '%s' "${'$'}OUT" > "${'$'}BRIDGE_DIR/result.txt"
+        printf '%d' "${'$'}CODE" > "${'$'}BRIDGE_DIR/exit_code.txt"
+        rm -f "${'$'}BRIDGE_DIR/cmd.txt.lock"
+        touch "${'$'}BRIDGE_DIR/done"
+    fi
+    sleep 0.5
+done
+""".trimIndent()
+        return newFixedLengthResponse(Status.OK, "text/x-shellscript", script)
     }
 
     // ════════════════════════════════════════════════════════════════

@@ -283,6 +283,53 @@ html, body {
 }
 #onboard-send-btn:active, #onboard-mic-btn:active { opacity: 0.6; }
 
+/* ── Termux bridge panel ──────────────────────────────────────── */
+#bridge-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 4px;
+}
+#bridge-status {
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  flex: 1;
+}
+#bridge-setup-btn {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  color: var(--text-mid);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+#bridge-setup-btn:active { opacity: 0.6; }
+#bridge-instructions {
+  margin: 6px 0 8px;
+  overflow: hidden;
+}
+.bridge-script {
+  background: rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 10px;
+  font-family: monospace;
+  color: rgba(255,255,255,0.8);
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 160px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.bridge-hint {
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
 #confirm-dialog {
   position: fixed;
   bottom: calc(var(--safe-bottom) + 80px);
