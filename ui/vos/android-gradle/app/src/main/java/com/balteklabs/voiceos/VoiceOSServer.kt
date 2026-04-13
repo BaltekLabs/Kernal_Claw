@@ -250,6 +250,9 @@ Start: introduce yourself in one sentence, then ask for their name."""
     // ── Subsystems ────────────────────────────────────────────────
     private val actionQueue by lazy { ActionQueue(context) }
 
+    val contextStore by lazy { ContextStore(context) }
+    val discoveryEngine by lazy { DiscoveryEngine(context, contextStore) }
+
     private val skillRegistry by lazy { buildSkillRegistry() }
 
     private val engine by lazy {
@@ -539,6 +542,35 @@ Start: introduce yourself in one sentence, then ask for their name."""
             ), listOf("command")),
         ToolDef("get_bridge_setup",
             "Get setup instructions and current status for the Termux bridge. Call this when the user asks how to connect Termux, or when run_shell times out.",
+            emptyMap(), emptyList()),
+
+        // ── Context discovery ─────────────────────────────────────
+        ToolDef("context_search",
+            "Search the local context store — an index of your notifications, SMS threads, contacts, calendar, tasks, and notes. " +
+            "Use this for questions like 'what did X say?', 'any messages about Y?', or 'what's upcoming related to Z?'.",
+            mapOf(
+                "query"  to mapOf("type" to "string",  "description" to "Keywords or phrase to search for"),
+                "type"   to mapOf("type" to "string",  "description" to "Filter by type: notification, sms_thread, contact, note, task, calendar, app (optional)"),
+                "limit"  to mapOf("type" to "integer", "description" to "Max results to return (default 8)")
+            ), listOf("query")),
+        ToolDef("get_pending_attention",
+            "Get a prioritised summary of items that need attention right now: unread messages, recent notifications, " +
+            "upcoming calendar events, and high-priority tasks. Use this at the start of agent mode to understand what's pressing.",
+            mapOf(
+                "limit" to mapOf("type" to "integer", "description" to "Max items to return (default 8)")
+            ), emptyList()),
+        ToolDef("get_message_threads",
+            "Get all recent SMS thread summaries grouped by contact — shows the last few messages per thread and whether there are unread messages.",
+            mapOf(
+                "limit"   to mapOf("type" to "integer", "description" to "Max threads to return (default 10)"),
+                "unread_only" to mapOf("type" to "boolean", "description" to "Only return threads with unread messages (default false)")
+            ), emptyList()),
+        ToolDef("discover_now",
+            "Trigger a fresh scan of all on-device data sources (contacts, SMS, notifications, calendar, tasks, notes) and rebuild the context index. " +
+            "Use this when the user says data seems stale or asks you to refresh.",
+            emptyMap(), emptyList()),
+        ToolDef("get_discovery_status",
+            "Show the status of the local context index: when each data type was last scanned and how many documents are indexed.",
             emptyMap(), emptyList())
     )
 
@@ -1050,6 +1082,7 @@ For outgoing messages: use draft_email to queue emails, send_whatsapp for WhatsA
 All outgoing messages are queued for user approval before sending — never send without queuing.
 Resolve contact names to numbers using your knowledge of the conversation or ask the user.""",
                 toolNames          = listOf(
+                    "context_search", "get_pending_attention", "get_message_threads",
                     "read_sms", "get_recent_calls", "get_notifications",
                     "call_contact", "send_sms", "draft_email", "send_whatsapp",
                     "remember", "recall", "get_device_info"
@@ -1136,6 +1169,7 @@ Use log_interaction when the user tells you about a recent meeting, call, or cat
 Use get_relationship_health for relationship drift analysis.
 Always combine social context with communication tools (send_sms, call_contact) for warm, contextual outreach.""",
                 toolNames          = listOf(
+                    "context_search", "get_pending_attention",
                     "get_contact_profile", "add_relationship_note", "log_interaction",
                     "get_relationship_health", "suggest_social_outreach",
                     "read_sms", "get_recent_calls", "call_contact", "send_sms",
@@ -1237,6 +1271,19 @@ Always combine social context with communication tools (send_sms, call_contact) 
             uri == "/api/crm/import"    && session.method == Method.POST   -> handleCrmImport()
             uri == "/api/crm/insights"  && session.method == Method.GET    -> handleCrmInsights()
             uri == "/api/crm/profile"   && session.method == Method.GET    -> handleCrmProfile(session)
+
+            // Discovery
+            uri == "/api/discovery/status" -> jsonResponse(mapOf(
+                "total_docs" to contextStore.totalDocCount(),
+                "last_scan"  to contextStore.lastScanMs(),
+                "by_type"    to contextStore.getDiscoveryStatus()
+            ))
+            uri == "/api/discovery/scan" && session.method == Method.POST -> {
+                discoveryEngine.scanIfStale(force = true) { count ->
+                    Log.i("VoiceOS", "Discovery scan triggered via API: $count docs")
+                }
+                jsonResponse(mapOf("ok" to true, "message" to "Discovery scan started in background"))
+            }
 
             else -> newFixedLengthResponse(Status.NOT_FOUND, MIME_PLAINTEXT, "Not found: $uri")
         }
@@ -1457,7 +1504,11 @@ Always combine social context with communication tools (send_sms, call_contact) 
     private fun handleHeartbeatControl(session: IHTTPSession): Response {
         val map = parseBody(session)
         when (map["action"] as? String) {
-            "start" -> heartbeat.start()
+            "start" -> {
+                heartbeat.start()
+                // Kick off background discovery when agent mode activates
+                discoveryEngine.scanIfStale()
+            }
             "stop"  -> heartbeat.stop()
         }
         return jsonResponse(mapOf("ok" to true, "probes" to heartbeat.list()))
@@ -1591,6 +1642,12 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 "draft_email"       -> toolDraftEmail(args)
                 "send_whatsapp"     -> toolSendWhatsapp(args)
                 "navigate"          -> toolNavigate(args)
+                // Context discovery
+                "context_search"        -> toolContextSearch(args)
+                "get_pending_attention" -> toolGetPendingAttention(args)
+                "get_message_threads"   -> toolGetMessageThreads(args)
+                "discover_now"          -> toolDiscoverNow()
+                "get_discovery_status"  -> toolGetDiscoveryStatus()
                 else                -> "Unknown tool: $name"
             }
         } catch (e: Exception) {
@@ -2210,6 +2267,104 @@ Always combine social context with communication tools (send_sms, call_contact) 
     }
 
     // ════════════════════════════════════════════════════════════════
+    // Context discovery tools
+    // ════════════════════════════════════════════════════════════════
+
+    private fun toolContextSearch(args: Map<String, Any>): String {
+        val query      = args["query"]  as? String  ?: return "Missing query"
+        val typeFilter = args["type"]   as? String
+        val limit      = (args["limit"] as? Double)?.toInt() ?: 8
+        val results    = contextStore.search(query, typeFilter, limit)
+        if (results.isEmpty()) return "No context found for: \"$query\"${if (typeFilter != null) " (type=$typeFilter)" else ""}"
+        val sdf = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+        return buildString {
+            appendLine("Context search: \"$query\" — ${results.size} result(s)")
+            results.forEach { doc ->
+                val age = sdf.format(java.util.Date(doc.timestamp))
+                appendLine("\n[${doc.type.uppercase()}] ${doc.title} ($age)")
+                appendLine(doc.body.take(200))
+            }
+        }.trimEnd()
+    }
+
+    private fun toolGetPendingAttention(args: Map<String, Any>): String {
+        val limit = (args["limit"] as? Double)?.toInt() ?: 8
+        // Trigger background discovery if stale
+        discoveryEngine.scanIfStale()
+        val items = contextStore.getPendingAttention(limit)
+        if (items.isEmpty()) {
+            return "No high-priority items found. Everything looks quiet right now."
+        }
+        val sdf = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+        return buildString {
+            appendLine("Pending attention (${items.size} items):")
+            items.forEach { doc ->
+                val age = sdf.format(java.util.Date(doc.timestamp))
+                appendLine("• [${doc.type}] ${doc.title} — $age")
+                val preview = doc.body.lines().firstOrNull()?.take(100) ?: ""
+                if (preview.isNotBlank()) appendLine("  $preview")
+            }
+            appendLine()
+            appendLine("Suggested next steps:")
+            // Group and suggest based on types present
+            val types = items.map { it.type }.toSet()
+            if (ContextStore.TYPE_SMS_THREAD in types) {
+                val unreadThreads = items.filter { it.type == ContextStore.TYPE_SMS_THREAD && "unread" in it.tags }
+                if (unreadThreads.isNotEmpty()) appendLine("• Reply to ${unreadThreads.size} unread SMS thread(s): use send_sms or get_message_threads for details")
+            }
+            if (ContextStore.TYPE_NOTIFICATION in types) appendLine("• Check notifications: use get_notifications for full detail")
+            if (ContextStore.TYPE_CALENDAR in types) appendLine("• Upcoming events: use read_calendar to confirm details")
+            if (ContextStore.TYPE_TASK in types) {
+                val highPri = items.filter { it.type == ContextStore.TYPE_TASK && "high" in it.tags }
+                if (highPri.isNotEmpty()) appendLine("• ${highPri.size} high-priority task(s) pending: use list_tasks for full list")
+            }
+        }.trimEnd()
+    }
+
+    private fun toolGetMessageThreads(args: Map<String, Any>): String {
+        val limit      = (args["limit"]       as? Double)?.toInt() ?: 10
+        val unreadOnly = args["unread_only"]  as? Boolean ?: false
+        var threads = contextStore.getByType(ContextStore.TYPE_SMS_THREAD, limit * 2)
+        if (unreadOnly) threads = threads.filter { "unread" in it.tags }
+        threads = threads.take(limit)
+        if (threads.isEmpty()) return if (unreadOnly) "No unread SMS threads." else "No SMS threads in context store. Try discover_now."
+        val sdf = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+        return buildString {
+            appendLine("SMS threads (${threads.size}):")
+            threads.forEach { doc ->
+                val age = sdf.format(java.util.Date(doc.timestamp))
+                appendLine("\n── ${doc.title} [$age]")
+                doc.body.lines().take(5).forEach { appendLine("  $it") }
+            }
+        }.trimEnd()
+    }
+
+    private fun toolDiscoverNow(): String {
+        val start = System.currentTimeMillis()
+        val count = try { discoveryEngine.fullScan() } catch (e: Exception) { return "Discovery failed: ${e.message}" }
+        val ms = System.currentTimeMillis() - start
+        return "Discovery complete in ${ms}ms — $count documents indexed across contacts, SMS, notifications, calendar, tasks, notes, and apps."
+    }
+
+    private fun toolGetDiscoveryStatus(): String {
+        val status = contextStore.getDiscoveryStatus()
+        val total  = contextStore.totalDocCount()
+        val lastMs = contextStore.lastScanMs()
+        if (status.isEmpty()) return "Context store is empty. Use discover_now to index device data."
+        val sdf = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+        val lastScan = if (lastMs > 0) sdf.format(java.util.Date(lastMs)) else "never"
+        return buildString {
+            appendLine("Context store: $total documents total (last scan: $lastScan)")
+            status.entries.sortedBy { it.key }.forEach { (type, meta) ->
+                val scannedMs = meta["scanned_ms"] as? Long ?: 0L
+                val count     = meta["doc_count"]  as? Int  ?: 0
+                val ts = if (scannedMs > 0) sdf.format(java.util.Date(scannedMs)) else "never"
+                appendLine("  $type: $count docs (scanned $ts)")
+            }
+        }.trimEnd()
+    }
+
+    // ════════════════════════════════════════════════════════════════
     // System prompt & live context
     // ════════════════════════════════════════════════════════════════
     private fun agentSystemPrompt(liveCtx: String = "", skillSuffix: String? = null): String {
@@ -2219,7 +2374,8 @@ Always combine social context with communication tools (send_sms, call_contact) 
         val skill = if (!skillSuffix.isNullOrBlank()) "\n\n$skillSuffix" else ""
         return """You are VoiceOS — an intelligent personal assistant running as the Android launcher on the user's phone.
 You have direct access to the device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, and the web.
-You also have a social relationship layer: use get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, and suggest_social_outreach to help the user maintain their personal network.
+You also have a local context index (context_search, get_pending_attention, get_message_threads, get_discovery_status, discover_now). Use these FIRST when the user asks about people, messages, or upcoming items — they are fast and avoid redundant device queries.
+You have a social relationship layer: get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, suggest_social_outreach.
 If Termux is installed, use run_shell to execute shell commands, check git repos, run scripts, and inspect files. Read-only commands run immediately; mutations are queued for approval. Use get_bridge_setup if setup is needed.
 Be concise and action-oriented. ALWAYS use tools to answer questions about device state.
 For outgoing actions: draft_email / send_sms / send_whatsapp queue the action for user approval — never open apps directly for these.
@@ -2289,6 +2445,27 @@ call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
                 sb.appendLine("  Queued actions (${pending.size} awaiting approval):")
                 pending.take(3).forEach { sb.appendLine("    • [${it.type}] ${it.preview}") }
             }
+            // Context store pending attention (high-weight items from last 24h)
+            try {
+                val attention = contextStore.getPendingAttention(6)
+                if (attention.isNotEmpty()) {
+                    sb.appendLine("  Needs attention (${attention.size} items — use get_pending_attention for details):")
+                    attention.take(4).forEach { doc ->
+                        sb.appendLine("    • [${doc.type}] ${doc.title.take(60)}")
+                    }
+                }
+                val totalDocs = contextStore.totalDocCount()
+                val lastScan  = contextStore.lastScanMs()
+                if (totalDocs > 0) {
+                    val scanAge = if (lastScan > 0) {
+                        val mins = (System.currentTimeMillis() - lastScan) / 60_000L
+                        when { mins < 2 -> "just now"; mins < 60 -> "${mins}m ago"; else -> "${mins / 60}h ago" }
+                    } else "not yet"
+                    sb.appendLine("  Context index: $totalDocs docs (scanned $scanAge) — use context_search to query")
+                } else {
+                    sb.appendLine("  Context index: empty — use discover_now to index device data")
+                }
+            } catch (_: Exception) {}
         }
         sb.append("╚════════════════════════════════════════════════════════╝")
         return sb.toString()
