@@ -112,6 +112,8 @@ class MainActivity : Activity() {
             server = VoiceOSServer(applicationContext, port)
             server!!.start()
             server!!.warmupOllama()
+            // Wire context store into notification service for incremental indexing
+            VoiceOSNotificationService.contextStore = server!!.contextStore
             // Give the server a moment to bind, then load the page
             handler.postDelayed({
                 webView.loadUrl("http://127.0.0.1:$port/")

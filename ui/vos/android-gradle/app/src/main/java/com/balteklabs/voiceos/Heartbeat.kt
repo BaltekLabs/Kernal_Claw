@@ -227,6 +227,28 @@ Use list_tasks to find the highest-priority pending task that can be advanced au
 If you can make concrete progress right now (run a shell command, look up information, update task notes), do it.
 Report in ONE sentence what you did, or reply "[idle]" if all pending tasks require direct user involvement."""
                 }
+            ),
+
+            /**
+             * context_digest — reads the context store for newly arrived high-priority items
+             * and proposes concrete next steps. Runs every 5 minutes in agent mode.
+             * Requires discover_now or background scan to have already run.
+             */
+            HeartbeatProbe(
+                name       = "context_digest",
+                intervalMs = 5 * 60_000L,
+                toolNames  = listOf(
+                    "get_pending_attention", "context_search", "get_message_threads",
+                    "get_notifications", "read_sms", "get_relationship_health",
+                    "remember", "add_task"
+                ),
+                prompt     = """Background check — review what needs attention.
+Use get_pending_attention to retrieve high-priority unread messages, notifications, and upcoming events.
+If nothing needs attention, reply "[idle]".
+If something genuinely needs the user's attention, reply with ONE or TWO specific action proposals (≤20 words total), e.g.:
+  "3 unread texts from Alice — want me to draft a reply?"
+  "Team standup in 18 min"
+Do NOT list every item. Pick the single most important thing. Do not ask questions about routine items."""
             )
         )
     }

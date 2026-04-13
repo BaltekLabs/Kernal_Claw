@@ -101,6 +101,7 @@ let lastTap = 0;
 let allApps = [];         // cached app list for suggestions
 let currentMode = 'assistant';   // 'assistant' | 'agent'
 let heartbeatTimer = null;
+let discoveryStatusTimer = null;
 let confirmResolve = null;
 let inputMode = 'idle';           // 'idle' | 'voice' | 'keyboard'
 let speechRec = null;
@@ -2005,7 +2006,7 @@ modeBtns.forEach(btn => {
     if (currentMode === 'agent') {
       agentIndicator.classList.add('visible');
       startHeartbeat();
-      // Tell server to start probe heartbeat
+      // Tell server to start probe heartbeat (also kicks off background discovery)
       await fetch('/api/heartbeat/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2013,9 +2014,12 @@ modeBtns.forEach(btn => {
       }).catch(() => {});
       // Check if onboarding is needed
       checkOnboarding();
+      // Show discovery status and poll until index is populated
+      startDiscoveryStatusPolling();
     } else {
       agentIndicator.classList.remove('visible');
       stopHeartbeat();
+      stopDiscoveryStatusPolling();
       await fetch('/api/heartbeat/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2076,6 +2080,43 @@ function runHeartbeat() {
 
 function showHeartbeatNotice(text) {
   showMsgDisplay(text, 7000);
+}
+
+// ── Discovery status polling ──────────────────────────────────────
+// After agent mode activates, poll /api/discovery/status and update
+// the agent label to show "indexing…" → "agent active · N docs".
+
+function startDiscoveryStatusPolling() {
+  stopDiscoveryStatusPolling();
+  let attempts = 0;
+  const MAX_FAST_POLLS = 15;  // poll fast for 60s then slow down
+
+  async function tick() {
+    if (currentMode !== 'agent') { stopDiscoveryStatusPolling(); return; }
+    attempts++;
+    try {
+      const res = await fetch('/api/discovery/status').then(r => r.json()).catch(() => null);
+      if (!res) return;
+      const total = res.total_docs || 0;
+      if (total === 0) {
+        if (agentLabel) agentLabel.textContent = 'indexing…';
+      } else {
+        if (agentLabel) agentLabel.textContent = `agent active · ${total} docs`;
+        // Once indexed, drop to 1-minute polling
+        if (attempts >= MAX_FAST_POLLS || total > 20) {
+          stopDiscoveryStatusPolling();
+          discoveryStatusTimer = setInterval(tick, 60_000);
+        }
+      }
+    } catch { /* silent */ }
+  }
+
+  tick();  // immediate first check
+  discoveryStatusTimer = setInterval(tick, 4000);
+}
+
+function stopDiscoveryStatusPolling() {
+  if (discoveryStatusTimer) { clearInterval(discoveryStatusTimer); discoveryStatusTimer = null; }
 }
 
 // ── Termux bridge panel ──────────────────────────────────────────
