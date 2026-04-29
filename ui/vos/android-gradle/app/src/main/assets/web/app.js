@@ -208,12 +208,18 @@ function processStreamLine(line) {
   const confirmMatch = line.match(/^\[CONFIRM:([^:]+):(.+)\]\s*$/);
   const skillMatch   = line.match(/^\[SKILL:([^\]]+)\]\s*$/);
 
+  // Suppress system lines — device snapshot, result previews, internal markers
+  const trimmed = line.trim();
+  if (/^[╔╠╚║═]/.test(trimmed)) return;
+  if (/^\[RESULT:/i.test(trimmed)) return;
+  if (/^\[DEVICE/i.test(trimmed)) return;
+
   if (skillMatch) {
     showSkillIndicator(skillMatch[1]);
   } else if (toolMatch) {
     showToolBadge(toolMatch[1]);
   } else if (resultMatch) {
-    // Suppress result lines from main text (they're shown in badges)
+    // Already caught above, but keep for safety
   } else if (confirmMatch) {
     const toolName = confirmMatch[1];
     let args = {};
@@ -266,8 +272,64 @@ function showConfirmDialog(toolName, args) {
 
 function appendResponseChunk(chunk) {
   currentResponse += chunk;
-  responseText.textContent = currentResponse;
+  responseText.innerHTML = renderMarkdown(currentResponse);
   responseScroll.scrollTop = responseScroll.scrollHeight;
+}
+
+// ── Lightweight markdown renderer ─────────────────────────────────
+function renderMarkdown(text) {
+  // Strip device snapshot blocks — model context, not user-facing
+  text = text.replace(/╔═.*?╚═[^\n]*/gs, '').replace(/^\s*╠.*$/gm, '');
+
+  // Escape HTML first, then selectively un-escape markdown constructs
+  let h = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Code blocks (```...```)
+  h = h.replace(/```[\w]*\n?([\s\S]*?)```/g,
+    (_, code) => `<pre class="md-code">${code.trim()}</pre>`);
+
+  // Inline code
+  h = h.replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>');
+
+  // Headers
+  h = h.replace(/^### (.+)$/gm, '<div class="md-h3">$1</div>');
+  h = h.replace(/^## (.+)$/gm,  '<div class="md-h2">$1</div>');
+  h = h.replace(/^# (.+)$/gm,   '<div class="md-h1">$1</div>');
+
+  // Bold / italic
+  h = h.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  h = h.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
+  h = h.replace(/\*(.+?)\*/g,         '<em>$1</em>');
+
+  // Bullet lists — group consecutive lines starting with -/•/·
+  h = h.replace(/((?:^[ \t]*[-•·] .+\n?)+)/gm, (block) => {
+    const items = block.trim().split('\n').map(l =>
+      `<li>${l.replace(/^[ \t]*[-•·] /, '').trim()}</li>`).join('');
+    return `<ul class="md-ul">${items}</ul>`;
+  });
+
+  // Numbered lists
+  h = h.replace(/((?:^[ \t]*\d+\. .+\n?)+)/gm, (block) => {
+    const items = block.trim().split('\n').map(l =>
+      `<li>${l.replace(/^[ \t]*\d+\. /, '').trim()}</li>`).join('');
+    return `<ol class="md-ol">${items}</ol>`;
+  });
+
+  // Horizontal rule
+  h = h.replace(/^---+$/gm, '<hr class="md-hr">');
+
+  // Paragraphs — double newline → paragraph break, single → <br>
+  h = h.replace(/\n{2,}/g, '</p><p class="md-p">');
+  h = h.replace(/\n/g, '<br>');
+  h = `<p class="md-p">${h}</p>`;
+
+  // Clean up empty paragraphs
+  h = h.replace(/<p class="md-p"><\/p>/g, '');
+  h = h.replace(/<p class="md-p">(<(?:ul|ol|pre|div|hr))/g, '$1');
+  h = h.replace(/(>)<\/p>(\s*)<p class="md-p">(<(?:ul|ol|pre|div|hr))/g, '>$3');
+
+  return h;
 }
 
 function prependBadge(skillName) {
@@ -646,6 +708,7 @@ function renderHistory() {
 // ── People / Social CRM panel ────────────────────────────────────
 
 const peopleImportBtn   = document.getElementById('people-import-btn');
+const peopleReviewBtn   = document.getElementById('people-review-btn');
 const peopleStatTotal   = document.getElementById('people-stat-total');
 const peopleStatAttn    = document.getElementById('people-stat-attention');
 const peopleSearch      = document.getElementById('people-search');
@@ -699,7 +762,12 @@ async function loadPeoplePanel() {
 
   let data = null;
   try {
-    const params = new URLSearchParams({ type: crmActiveType });
+    const params = new URLSearchParams();
+    if (crmActiveType === 'followup') {
+      params.set('followup', 'true');
+    } else if (crmActiveType && crmActiveType !== 'all') {
+      params.set('type', crmActiveType);
+    }
     const q = peopleSearch.value.trim();
     if (q) params.set('q', q);
     data = await fetch('/api/crm/contacts?' + params).then(r => r.json());
@@ -714,8 +782,13 @@ async function loadPeoplePanel() {
   crmAllContacts = contacts;
 
   peopleStatTotal.textContent = `${data?.total ?? 0} contacts`;
+  const followupCount = contacts.filter(c => c.followUp).length;
   const attn = data?.needsAttention ?? 0;
-  peopleStatAttn.textContent = attn > 0 ? `· ${attn} need attention` : '';
+  if (followupCount > 0) {
+    peopleStatAttn.textContent = `· ${followupCount} follow up`;
+  } else {
+    peopleStatAttn.textContent = attn > 0 ? `· ${attn} need attention` : '';
+  }
 
   crmLoaded = true;
 
@@ -731,13 +804,18 @@ function buildPersonCard(contact) {
   card.className = 'person-card';
 
   const { cls: daysCls, label: daysLabel } = daysBadge(contact.daysSince ?? -1);
-  const initials  = avatarInitials(contact.name);
-  const avatarBg  = avatarColor(contact.name);
-  const typeStr   = contact.type || '';
-  const tags      = contact.tags || [];
-  const notes     = contact.notes || [];         // [{ts, text}]
-  const noteCount = notes.length;
-  const lastNote  = notes[noteCount - 1];
+  const initials   = avatarInitials(contact.name);
+  const avatarBg   = avatarColor(contact.name);
+  const typeStr    = contact.type || '';
+  const tags       = contact.tags || [];
+  const notes      = contact.notes || [];         // [{ts, text}]
+  const noteCount  = notes.length;
+  const lastNote   = notes[noteCount - 1];
+  let   followUp   = contact.followUp || false;
+  const frequency  = contact.frequency || '';
+  const freqOverdue = contact.frequencyOverdue || false;
+  const sentiment  = contact.sentiment || {};
+  const birthday   = contact.birthday || '';
 
   // Build type tag HTML
   const typeHtml = typeStr
@@ -750,9 +828,17 @@ function buildPersonCard(contact) {
     ? `<span class="person-phone-small">${escHtml(contact.phone)}</span>`
     : '';
 
+  const sentimentEmoji = { great: '😊', ok: '😐', struggling: '😔', busy: '🏃' };
+  const freqBadge = frequency
+    ? `<span class="person-extra-tag ${freqOverdue ? 'freq-overdue' : 'freq-ok'}">${freqOverdue ? '⚠ ' : ''}${frequency}</span>`
+    : '';
+  const sentimentBadge = sentiment.value
+    ? `<span class="person-extra-tag">${sentimentEmoji[sentiment.value] || ''} ${sentiment.value}</span>`
+    : '';
+
   card.innerHTML = `
     <div class="person-card-top">
-      <div class="person-avatar" style="background:${avatarBg}">${initials}</div>
+      <div class="person-avatar" style="background:${avatarBg}">${initials}${followUp ? '<span class="person-followup-dot"></span>' : ''}</div>
       <div class="person-card-info">
         <div class="person-card-row1">
           <span class="person-name">${escHtml(contact.name)}</span>
@@ -761,16 +847,20 @@ function buildPersonCard(contact) {
         <div class="person-card-row2">
           ${typeHtml}${extraTagsHtml}
           ${!typeStr && !tags.length ? phoneHtml : ''}
+          ${freqBadge}${sentimentBadge}
           ${noteCount > 0 ? `<span class="person-extra-tag">📝 ${noteCount}</span>` : ''}
+          ${followUp ? '<span class="person-extra-tag followup-badge">🔔</span>' : ''}
           <span class="person-expand-chevron">▾</span>
         </div>
       </div>
     </div>
     ${lastNote ? `<div class="person-note-preview">${escHtml(lastNote.text)}</div>` : ''}
     <div class="person-quick-actions">
-      <button class="pqa-btn" data-qa="call">📞 Call</button>
-      <button class="pqa-btn" data-qa="text">💬 Text</button>
-      <button class="pqa-btn" data-qa="agent">🤖 Agent</button>
+      <button class="pqa-btn${followUp ? ' followup-active' : ''}" data-qa="followup" title="Follow-up flag">🔔</button>
+      <button class="pqa-btn" data-qa="draft" title="Draft message">✍ Draft</button>
+      <button class="pqa-btn" data-qa="call">📞</button>
+      <button class="pqa-btn" data-qa="text">💬</button>
+      <button class="pqa-btn" data-qa="agent">🤖</button>
       <button class="pqa-btn danger" data-qa="remove">✕</button>
     </div>
     <div class="person-detail">
@@ -780,6 +870,24 @@ function buildPersonCard(contact) {
           `<button class="ptp-btn${typeStr===t?' active':''}" data-rtype="${t}">${t}</button>`
         ).join('')}
       </div>
+
+      <div class="person-detail-label">Contact Frequency</div>
+      <div class="person-freq-picker">
+        ${['daily','weekly','biweekly','monthly','quarterly'].map(f =>
+          `<button class="pfq-btn${frequency===f?' active':''}" data-freq="${f}">${f}</button>`
+        ).join('')}
+      </div>
+
+      <div class="person-detail-label">Sentiment</div>
+      <div class="person-sentiment-picker">
+        ${[['great','😊'],['ok','😐'],['struggling','😔'],['busy','🏃']].map(([s,e]) =>
+          `<button class="psnt-btn${sentiment.value===s?' active':''}" data-sentiment="${s}">${e} ${s}</button>`
+        ).join('')}
+      </div>
+
+      <div class="person-detail-label">Birthday <span class="person-detail-hint">(MM-DD)</span></div>
+      <input class="person-birthday-input" type="text" placeholder="e.g. 03-15" maxlength="5"
+        value="${escHtml(birthday)}" autocomplete="off" autocorrect="off" spellcheck="false">
 
       <div class="person-detail-label">Tags</div>
       <div class="person-tags-row" data-tagrow>
@@ -819,6 +927,42 @@ function buildPersonCard(contact) {
     expandedCard = card.classList.contains('expanded') ? card : null;
   });
 
+  // ── Follow-up toggle
+  card.querySelector('[data-qa="followup"]').addEventListener('click', async e => {
+    e.stopPropagation();
+    followUp = !followUp;
+    contact.followUp = followUp;
+    const btn = e.currentTarget;
+    btn.classList.toggle('followup-active', followUp);
+    btn.textContent = followUp ? '🔔 On' : '🔔';
+    // Update the badge row
+    const row2 = card.querySelector('.person-card-row2');
+    let badge = row2.querySelector('.followup-badge');
+    if (followUp && !badge) {
+      badge = document.createElement('span');
+      badge.className = 'person-extra-tag followup-badge';
+      badge.textContent = '🔔 follow up';
+      const chevron = row2.querySelector('.person-expand-chevron');
+      row2.insertBefore(badge, chevron);
+    } else if (!followUp && badge) {
+      badge.remove();
+    }
+    // Update avatar dot
+    const avatar = card.querySelector('.person-avatar');
+    let dot = avatar.querySelector('.person-followup-dot');
+    if (followUp && !dot) {
+      dot = document.createElement('span');
+      dot.className = 'person-followup-dot';
+      avatar.appendChild(dot);
+    } else if (!followUp && dot) {
+      dot.remove();
+    }
+    await post('/api/crm/contact/update', { name: contact.key || contact.name, followUp });
+    // Update the stat bar
+    const attnCount = crmAllContacts.filter(c => c.followUp).length;
+    peopleStatAttn.textContent = attnCount > 0 ? `· ${attnCount} follow up` : '';
+  });
+
   // ── Quick actions
   card.querySelector('[data-qa="call"]').addEventListener('click', e => {
     e.stopPropagation();
@@ -831,6 +975,11 @@ function buildPersonCard(contact) {
     closePanel('people');
     if (contact.phone) { post('/api/sms', { number: contact.phone }); }
     else sendMessage(`Text ${contact.name}`);
+  });
+  card.querySelector('[data-qa="draft"]').addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel('people');
+    sendMessage(`Draft a warm outreach message to ${contact.name}. Use their profile and notes to make it personal.`);
   });
   card.querySelector('[data-qa="agent"]').addEventListener('click', e => {
     e.stopPropagation();
@@ -861,6 +1010,50 @@ function buildPersonCard(contact) {
       newTag.textContent = type;
       row2.insertBefore(newTag, row2.firstChild);
     });
+  });
+
+  // ── Contact frequency picker
+  card.querySelectorAll('.pfq-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const freq = btn.dataset.freq;
+      card.querySelectorAll('.pfq-btn').forEach(b => b.classList.toggle('active', b === btn));
+      const freqDays = { daily:1, weekly:7, biweekly:14, monthly:30, quarterly:90 }[freq] || 30;
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, frequency: freq, frequencyDays: freqDays });
+      contact.frequency = freq;
+      contact.frequencyDays = freqDays;
+      // Update row2 freq badge
+      const row2 = card.querySelector('.person-card-row2');
+      let fBadge = row2.querySelector('.freq-ok, .freq-overdue');
+      if (!fBadge) {
+        fBadge = document.createElement('span');
+        row2.insertBefore(fBadge, row2.querySelector('.person-expand-chevron'));
+      }
+      fBadge.className = 'person-extra-tag freq-ok';
+      fBadge.textContent = freq;
+    });
+  });
+
+  // ── Sentiment picker
+  card.querySelectorAll('.psnt-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const sval = btn.dataset.sentiment;
+      card.querySelectorAll('.psnt-btn').forEach(b => b.classList.toggle('active', b === btn));
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, sentiment: sval });
+      contact.sentiment = { value: sval };
+    });
+  });
+
+  // ── Birthday input
+  const birthdayInput = card.querySelector('.person-birthday-input');
+  birthdayInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+  birthdayInput.addEventListener('change', async () => {
+    const val = birthdayInput.value.trim();
+    if (!val || /^\d{2}-\d{2}$/.test(val)) {
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, birthday: val });
+      contact.birthday = val;
+    }
   });
 
   // ── Tags
@@ -950,6 +1143,13 @@ peopleSearch.addEventListener('input', () => {
 peopleSearch.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 
 // Import button
+// Review All — triggers full AI relationship review from the panel
+peopleReviewBtn.addEventListener('click', () => {
+  closePanel('people');
+  sendMessage(`Do a full review of my relationships. Check who I need to follow up with, anyone I've been out of touch with, any upcoming birthdays, and whether my social goals are on track. Propose specific actions for each.`);
+});
+peopleReviewBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
 peopleImportBtn.addEventListener('click', async () => {
   peopleImportBtn.classList.add('loading');
   peopleImportBtn.textContent = 'Importing…';
@@ -977,7 +1177,7 @@ peoplePanel.addEventListener('touchstart', e => e.stopPropagation(), { passive: 
 peopleClose.addEventListener('click', () => closePanel('people'));
 
 // ── Settings ─────────────────────────────────────────────────────
-const CLOUD_PROVIDERS = ['anthropic', 'openai', 'groq'];
+const CLOUD_PROVIDERS = ['anthropic', 'openai', 'grok'];
 
 providerBtns.forEach(btn => {
   btn.addEventListener('click', async () => {
@@ -1172,8 +1372,8 @@ const SWIPE_MAX_PERP = 80;
 const LONG_PRESS_MS  = 500;
 
 function isScrollableTarget(el) {
-  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl, peoplePanel];
-  return panels.some(p => p.contains(el));
+  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl, peoplePanel, taskOverlay];
+  return panels.some(p => p && p.contains(el));
 }
 
 document.addEventListener('touchstart', (e) => {
@@ -1253,13 +1453,14 @@ function onSwipeDown() {
 }
 
 function onSwipeLeft()  {
-  if (activePanel === 'people') { closePanel('people'); return; }
   if (activePanel === 'history') { closePanel('history'); return; }
+  if (activePanel === 'people')  { return; }   // don't interfere — right-swipe closes people
   closeAllPanels();
-  openPeoplePanel();
+  openPeoplePanel();   // panel slides in from right, matching left-swipe direction
 }
 
 function onSwipeRight() {
+  if (activePanel === 'people')  { closePanel('people'); return; }  // push it back right
   if (activePanel === 'history') { closePanel('history'); return; }
   closeAllPanels();
   showPanel('history');
@@ -1597,14 +1798,12 @@ async function deleteTask(id) {
 // ── Task overlay UI ──────────────────────────────────────────────
 function renderTaskOverlay() {
   taskOverlayList.innerHTML = '';
+  // Only show active tasks — completed tasks are immediately deleted server-side
   const active = taskCache.filter(t => t.status !== 'done');
-  const done   = taskCache.filter(t => t.status === 'done');
-  const all    = [...active, ...done];
 
-  const pending = active.length;
-  taskOverlayCount.textContent = pending ? `${pending} active` : 'all done';
+  taskOverlayCount.textContent = active.length ? `${active.length} active` : 'all done';
 
-  if (all.length === 0) {
+  if (active.length === 0) {
     const el = document.createElement('div');
     el.className = 'tov-empty';
     el.textContent = 'No tasks yet. Ask the agent to add some.';
@@ -1612,35 +1811,36 @@ function renderTaskOverlay() {
     return;
   }
 
-  all.forEach((task, idx) => {
+  active.forEach((task) => {
     const el       = document.createElement('div');
-    const isDone   = task.status === 'done';
     const priority = task.priority || 'medium';
-    const dotClass = isDone ? 'done' : (task.status === 'in_progress' ? 'in_progress' : priority);
+    const dotClass = task.status === 'in_progress' ? 'in_progress' : priority;
 
-    el.className = `tov-item${isDone ? ' done' : ''}`;
+    el.className = 'tov-item';
 
     const notes = task.notes ? escHtml(task.notes.slice(0, 60)) : '';
-    el.innerHTML = `
-      <span class="tov-dot ${dotClass}"></span>
-      <div class="tov-body">
-        <div class="tov-title">${escHtml(task.title)}</div>
-        ${notes ? `<div class="tov-meta">${notes}</div>` : ''}
-      </div>
-      <button class="tov-advance" data-id="${task.id}" data-title="${escHtml(task.title)}">▶ advance</button>`;
+    el.innerHTML = `<span class="tov-dot ${dotClass}"></span>
+       <div class="tov-body">
+         <div class="tov-title">${escHtml(task.title)}</div>
+         ${notes ? `<div class="tov-meta">${notes}</div>` : ''}
+       </div>
+       <button class="tov-advance" data-id="${task.id}" data-title="${escHtml(task.title)}">▶ advance</button>`;
 
     // Tap item → advance via agent
     el.addEventListener('click', (e) => {
       if (e.target.classList.contains('tov-advance')) return;
-      if (isDone) return;
       advanceTask(task);
     });
 
-    // Advance button
-    el.querySelector('.tov-advance')?.addEventListener('click', (e) => {
+    // Advance button — stop propagation on both click and touchstart to prevent swipe trigger
+    const advBtn = el.querySelector('.tov-advance');
+    advBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       advanceTask(task);
     });
+    advBtn.addEventListener('touchstart', (e) => {
+      e.stopPropagation();
+    }, { passive: true });
 
     taskOverlayList.appendChild(el);
   });
@@ -1714,6 +1914,9 @@ taskOverlay.addEventListener('touchstart', e => {
   // Reset auto-hide timer on any touch within overlay
   clearTimeout(overlayHideTimer);
   overlayHideTimer = setTimeout(hideTaskOverlay, OVERLAY_AUTO_HIDE_MS);
+}, { passive: true });
+taskOverlay.addEventListener('touchend', e => {
+  e.stopPropagation();
 }, { passive: true });
 
 taskOverlayAdd.addEventListener('click', () => {

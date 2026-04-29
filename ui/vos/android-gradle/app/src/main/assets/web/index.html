@@ -150,8 +150,8 @@
         <button class="provider-btn" data-provider="openai" data-model="gpt-4o-mini">
           OpenAI<small>GPT-4o mini</small>
         </button>
-        <button class="provider-btn" data-provider="groq" data-model="llama-3.3-70b-versatile">
-          Groq<small>Llama 3.3 70B</small>
+        <button class="provider-btn" data-provider="grok" data-model="grok-4.20-0309-non-reasoning">
+          Grok<small>xAI · grok-4</small>
         </button>
       </div>
       <h2>TERMUX</h2>
@@ -227,6 +227,7 @@
     <div id="people-header">
       <span id="people-title">People</span>
       <div id="people-header-actions">
+        <button id="people-review-btn" aria-label="AI relationship review">Review</button>
         <button id="people-import-btn" aria-label="Import contacts">Import</button>
         <button id="people-close" aria-label="Close">✕</button>
       </div>
@@ -243,6 +244,7 @@
 
     <div id="people-filter-chips">
       <button class="pf-chip active" data-type="all">All</button>
+      <button class="pf-chip pf-chip-followup" data-type="followup">🔔 Follow up</button>
       <button class="pf-chip" data-type="friend">Friend</button>
       <button class="pf-chip" data-type="family">Family</button>
       <button class="pf-chip" data-type="work">Work</button>

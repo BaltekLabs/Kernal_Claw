@@ -9,17 +9,22 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.StatFs
 import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.provider.Settings
+import android.telephony.TelephonyManager
 import android.util.Base64
 import android.util.Log
+import android.view.KeyEvent
 import com.google.gson.Gson
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
@@ -57,9 +62,80 @@ class VoiceOSServer(
         get() = prefs.getString("ollama_url", "http://127.0.0.1:11434") ?: "http://127.0.0.1:11434"
         set(v) { prefs.edit().putString("ollama_url", v).apply() }
 
-    private fun apiKey(provider: String) = prefs.getString("key_$provider", "") ?: ""
+    private fun apiKey(provider: String) = (prefs.getString("key_$provider", "") ?: "").trim()
     private fun saveKey(provider: String, key: String) =
-        prefs.edit().putString("key_$provider", key).apply()
+        prefs.edit().putString("key_$provider", key.trim()).apply()
+
+    // ── Model tiers ───────────────────────────────────────────────
+    /** Three-tier model routing: LOCAL (no LLM), FAST (cheap), FULL (capable). */
+    enum class ModelTier { LOCAL, FAST, FULL }
+
+    /** Default fast (cheap) model for each provider. */
+    private val defaultFastModel = mapOf(
+        "anthropic" to "claude-haiku-4-5-20251001",
+        "openai"    to "gpt-4o-mini",
+        "grok"      to "grok-4-1-fast-non-reasoning",
+        "ollama"    to ""   // same as full for Ollama — user picks their own small model
+    )
+
+    /** The fast model for the active provider. Falls back to full model if not set. */
+    private var activeFastModel: String
+        get() {
+            val saved = prefs.getString("model_fast_$activeProvider", "") ?: ""
+            return saved.ifBlank { defaultFastModel[activeProvider] ?: activeModel }
+        }
+        set(v) { prefs.edit().putString("model_fast_$activeProvider", v).apply() }
+
+    /** Return the model string to use for a given tier and provider. */
+    private fun modelForTier(tier: ModelTier): String = when (tier) {
+        ModelTier.FAST  -> activeFastModel.ifBlank { activeModel }
+        ModelTier.FULL  -> activeModel
+        ModelTier.LOCAL -> ""   // no model needed
+    }
+
+    // ── Query router ──────────────────────────────────────────────
+    /**
+     * Classify a user query before touching any LLM.
+     * LOCAL  → answer entirely from device data, zero API cost
+     * FAST   → use cheap model (Haiku / gpt-4o-mini / llama-8b)
+     * FULL   → use full model for complex reasoning / writing
+     */
+    fun classifyQuery(query: String): ModelTier {
+        val q = query.lowercase().trim()
+
+        // Patterns that can be answered locally without any LLM
+        val localPatterns = listOf(
+            Regex("(show|list|what are|any).{0,20}(task|todo|to-do)"),
+            Regex("(who|which).{0,30}(reach out|contact|follow.?up|overdue|haven.t talked)"),
+            Regex("(battery|charge).{0,20}(level|percent|status|how much)"),
+            Regex("(add|create|new).{0,10}task"),
+            Regex("(complete|done|finish|mark).{0,15}task"),
+            Regex("(what|any).{0,20}notification"),
+            Regex("(what.s|show|list).{0,15}(app|install)"),
+            Regex("(set|create).{0,10}(alarm|reminder|timer)"),
+            Regex("(open|launch|start).{0,20}(app|gmail|youtube|maps|chrome|spotify|settings)"),
+            Regex("(call|ring|phone).{0,20}\\w+"),
+            Regex("(what.s|current|check).{0,10}(time|date|day)"),
+            Regex("(recall|remember|what did you).{0,20}note")
+        )
+        if (localPatterns.any { it.containsMatchIn(q) }) return ModelTier.LOCAL
+
+        // Patterns suited for the fast cheap model
+        val fastPatterns = listOf(
+            Regex("(summar|brief|quick|short).{0,20}(email|message|notif|news)"),
+            Regex("(should i|do i need|is it important|prioriti)"),
+            Regex("(relationship|social|outreach|friend|contact).{0,20}(health|status|suggest)"),
+            Regex("(check|review|scan).{0,20}(task|calendar|schedule|inbox)"),
+            Regex("(what.s (on|in)|show).{0,20}(calendar|schedule|agenda)"),
+            Regex("(translate|convert|calculate|how many|how much)"),
+            Regex("(weather|temperature|forecast)"),
+            Regex("(simple|quick) (question|answer|lookup)")
+        )
+        if (fastPatterns.any { it.containsMatchIn(q) }) return ModelTier.FAST
+
+        // Default to FULL for everything else (complex, writing, multi-step)
+        return ModelTier.FULL
+    }
 
     // ── User profile ─────────────────────────────────────────────
     private val PROFILE_KEY = "user_profile"
@@ -138,14 +214,17 @@ class VoiceOSServer(
     private val bridgeDir: java.io.File by lazy {
         java.io.File(android.os.Environment.getExternalStorageDirectory(), "voiceos_bridge")
     }
-    private val BRIDGE_TIMEOUT_MS = 30_000L
+    /** Short timeout for read-only commands (ls, git status, cat…). */
+    private val BRIDGE_READ_TIMEOUT_MS  = 30_000L
+    /** Long timeout for write operations (git clone, npm install, pip install…). */
+    private val BRIDGE_WRITE_TIMEOUT_MS = 180_000L
 
     private fun isBridgeReady(): Boolean = try {
         if (!bridgeDir.exists()) bridgeDir.mkdirs()
         bridgeDir.exists() && bridgeDir.canWrite()
     } catch (_: Exception) { false }
 
-    /** Read-only commands run immediately; anything else is queued for user approval. */
+    /** True for commands that are clearly read-only — used to pick timeout, not to gate execution. */
     private fun isReadOnlyShellCmd(cmd: String): Boolean {
         val c = cmd.trim().lowercase()
         return listOf(
@@ -161,11 +240,15 @@ class VoiceOSServer(
         ).any { c.startsWith(it) }
     }
 
-    /** Write command to bridge dir, block until Termux daemon writes result, return output. */
-    private fun executeBridgeCommand(cmd: String, workdir: String): String {
+    /**
+     * Write command to bridge dir, block until Termux daemon writes result, return output.
+     * [timeoutMs] is chosen by the caller based on expected duration.
+     * Returns a structured result string including exit code on failure.
+     */
+    private fun executeBridgeCommand(cmd: String, workdir: String, timeoutMs: Long = BRIDGE_READ_TIMEOUT_MS): String {
         return try {
             if (!isBridgeReady())
-                return "Bridge dir not accessible. Run termux-setup-storage in Termux first, then start the bridge daemon."
+                return "Bridge dir not accessible. Ensure termux-setup-storage has been run and the VoiceOS bridge daemon is running in Termux."
             val cmdFile    = java.io.File(bridgeDir, "cmd.txt")
             val wdirFile   = java.io.File(bridgeDir, "workdir.txt")
             val doneFile   = java.io.File(bridgeDir, "done")
@@ -180,34 +263,97 @@ class VoiceOSServer(
             cmdFile.writeText(cmd)
 
             // Wait for daemon to signal completion
-            val deadline = System.currentTimeMillis() + BRIDGE_TIMEOUT_MS
+            val deadline = System.currentTimeMillis() + timeoutMs
             while (System.currentTimeMillis() < deadline) {
                 if (doneFile.exists()) {
                     val out  = try { resultFile.readText().trim() } catch (_: Exception) { "" }
                     val code = try { exitFile.readText().trim().toIntOrNull() ?: 0 } catch (_: Exception) { 0 }
                     doneFile.delete()
-                    return if (code == 0) out.ifBlank { "(no output)" }
-                           else "Exit $code:\n$out"
+                    return if (code == 0) out.ifBlank { "(command completed, no output)" }
+                           else "[exit $code]\n${out.ifBlank { "(no output)" }}"
                 }
                 Thread.sleep(500)
             }
-            "Timeout (${BRIDGE_TIMEOUT_MS / 1000}s) — is the bridge daemon running in Termux?"
+            "Timeout (${timeoutMs / 1000}s) waiting for bridge result. Bridge daemon may have stopped — restart it in Termux."
         } catch (e: Exception) { "Bridge error: ${e.message}" }
     }
 
+    /**
+     * Run a shell command via the Termux bridge.
+     * ALL commands execute immediately and return their result inline to the agent,
+     * so multi-step workflows (clone → verify → configure credentials → retry) work correctly.
+     * Mutation commands use a longer timeout (3 min) for operations like git clone or npm install.
+     */
     private fun toolRunShell(args: Map<String, Any>): String {
         val cmd     = args["command"] as? String ?: return "Missing: command"
         val workdir = args["workdir"] as? String ?: "~"
-        return if (isReadOnlyShellCmd(cmd)) {
-            executeBridgeCommand(cmd, workdir)
+        val timeout = if (isReadOnlyShellCmd(cmd)) BRIDGE_READ_TIMEOUT_MS else BRIDGE_WRITE_TIMEOUT_MS
+        return executeBridgeCommand(cmd, workdir, timeout)
+    }
+
+    private fun toolGitSetupCredential(args: Map<String, Any>): String {
+        val host     = args["host"]     as? String ?: return "Missing host"
+        val username = args["username"] as? String ?: return "Missing username"
+        val token    = args["token"]    as? String ?: return "Missing token"
+        // Configure credential helper and store the credential
+        val setupHelper = executeBridgeCommand("git config --global credential.helper store", "~")
+        val credLine    = "https://$username:$token@$host"
+        // Append to .git-credentials (store helper file)
+        val storeResult = executeBridgeCommand(
+            "echo '$credLine' >> ~/.git-credentials && chmod 600 ~/.git-credentials", "~"
+        )
+        // Also set user.email / user.name if not set
+        val nameCheck = executeBridgeCommand("git config --global user.name", "~")
+        val extraSetup = if (nameCheck.isBlank() || nameCheck.startsWith("[exit")) {
+            executeBridgeCommand("git config --global user.name \"$username\"", "~")
+            "\nNote: set git user.name to \"$username\". You may also want to set user.email."
+        } else ""
+        val ok = !storeResult.startsWith("[exit")
+        return if (ok) "Git credentials configured for $host (user: $username). HTTPS clones should now work without prompting.$extraSetup"
+               else "Credential store failed: $storeResult"
+    }
+
+    private fun toolGitClone(args: Map<String, Any>): String {
+        val url     = args["url"]     as? String ?: return "Missing url"
+        val workdir = args["workdir"] as? String ?: "~"
+        val name    = args["name"]    as? String ?: ""
+
+        // Determine target folder name
+        val repoName = name.ifBlank { url.trimEnd('/').substringAfterLast('/').removeSuffix(".git") }
+        val targetPath = if (workdir == "~") "~/$repoName" else "$workdir/$repoName"
+
+        // Check if already cloned
+        val existsCheck = executeBridgeCommand("ls -d $targetPath 2>/dev/null && echo EXISTS", workdir)
+        if ("EXISTS" in existsCheck) {
+            val statusOut = executeBridgeCommand("git status --short", targetPath)
+            return "Already cloned at $targetPath\nStatus: ${statusOut.take(200)}"
+        }
+
+        // Run the clone with a long timeout
+        val cloneCmd  = if (name.isBlank()) "git clone $url" else "git clone $url $name"
+        val cloneOut  = executeBridgeCommand(cloneCmd, workdir, BRIDGE_WRITE_TIMEOUT_MS)
+
+        return if (cloneOut.startsWith("[exit")) {
+            // Parse the error and give actionable guidance
+            val errLower = cloneOut.lowercase()
+            val guidance = when {
+                "authentication" in errLower || "403" in errLower || "401" in errLower ->
+                    "\n\nNext step: use git_setup_credential to store your Personal Access Token for ${url.substringAfter("://").substringBefore("/")}, then try git_clone again."
+                "repository not found" in errLower || "404" in errLower ->
+                    "\n\nCheck the repository URL is correct and that you have access to it."
+                "already exists" in errLower ->
+                    "\n\nFolder already exists at $targetPath. Use run_shell(\"ls $targetPath\") to inspect it."
+                "could not resolve host" in errLower || "network" in errLower ->
+                    "\n\nNetwork error — check that Termux has internet access."
+                "permission denied" in errLower && "publickey" in errLower ->
+                    "\n\nSSH key not found. Either use an HTTPS URL instead, or run run_shell(\"ssh-keygen -t ed25519\") to create a key and add the public key to your git host."
+                else -> ""
+            }
+            "Clone failed: $cloneOut$guidance"
         } else {
-            // Mutation — queue for user approval; executes on approval
-            actionQueue.add(
-                type    = "run_shell",
-                params  = mapOf("command" to cmd, "workdir" to workdir),
-                preview = "${if (workdir != "~") "[$workdir] " else ""}$cmd"
-            )
-            "Mutation queued for approval: `$cmd`\nUser will see it in the pending actions queue."
+            // Verify the clone succeeded
+            val verifyOut = executeBridgeCommand("git -C $targetPath log --oneline -3 2>&1", workdir)
+            "Cloned successfully to $targetPath\n${cloneOut.take(200)}\n\nRecent commits:\n$verifyOut"
         }
     }
 
@@ -255,51 +401,137 @@ Start: introduce yourself in one sentence, then ask for their name."""
 
     private val skillRegistry by lazy { buildSkillRegistry() }
 
+    /** Holds the tier for the current agent request so the callLLM lambda can use it. */
+    private val requestTier = ThreadLocal<ModelTier>()
+
     private val engine by lazy {
         AgentEngine(
             skillRegistry  = skillRegistry,
             allToolDefs    = allTools,
             executeTool    = ::executeTool,
-            callLLM        = { msgs, toolDefs, sys -> callLLMWithTools(msgs, toolDefs, sys) },
+            callLLM        = { msgs, toolDefs, sys ->
+                val tier = requestTier.get() ?: ModelTier.FULL
+                callLLMWithTools(msgs, toolDefs, sys, tier)
+            },
             buildSysPrompt = { liveCtx, skillSuffix -> agentSystemPrompt(liveCtx, skillSuffix) }
         )
     }
 
     private val heartbeat by lazy {
-        ProbeHeartbeat { probe ->
-            // Build the prompt — initiative probes may return "[idle]" when profile has no data
-            val profile  = loadProfile()
-            val prompt   = probe.buildPrompt(profile)
-            if (prompt == "[idle]") return@ProbeHeartbeat null
+        ProbeHeartbeat(
+            // ── Native probe handler — zero LLM cost ────────────────
+            nativeRunner = { probe ->
+                when (probe.name) {
+                    "battery_watch" -> nativeBatteryCheck()
+                    "notification_triage" -> nativeNotificationTriage()
+                    else -> null   // not a native probe, fall through to LLM runner
+                }
+            },
+            // ── LLM probe handler — uses FAST tier model ─────────────
+            llmRunner = { probe ->
+                val profile  = loadProfile()
+                val prompt   = probe.buildPrompt(profile)
+                if (prompt == "[idle]") return@ProbeHeartbeat null
 
-            val toolDefs  = if (probe.toolNames.isEmpty()) allTools
-                            else allTools.filter { it.name in probe.toolNames }
-            val liveCtx   = try { buildLiveContext(minimal = true) } catch (_: Exception) { "" }
-            val sysPrompt = agentSystemPrompt(liveCtx)
-            val msgs = mutableListOf<Map<String, Any>>(
-                mapOf("role" to "user", "content" to prompt)
-            )
-            val sb = StringBuilder()
-            for (step in 0..2) {
-                val result = callLLMWithTools(msgs, toolDefs, sysPrompt)
-                if (result.text.isNotBlank()) sb.append(result.text)
-                if (result.done || result.toolCalls.isEmpty()) break
-                msgs += mapOf("role" to "assistant", "content" to result.rawContent)
-                for (tc in result.toolCalls) {
-                    val r = try { executeTool(tc.name, tc.args) } catch (e: Exception) { "error: ${e.message}" }
-                    if (activeProvider == "anthropic") {
-                        msgs += mapOf("role" to "user", "content" to listOf(
-                            mapOf("type" to "tool_result", "tool_use_id" to tc.id, "content" to r)
-                        ))
+                val toolDefs  = if (probe.toolNames.isEmpty()) allTools
+                                else allTools.filter { it.name in probe.toolNames }
+                val liveCtx   = try { buildLiveContext(minimal = true) } catch (_: Exception) { "" }
+                val sysPrompt = agentSystemPrompt(liveCtx)
+                val msgs = mutableListOf<Map<String, Any>>(
+                    mapOf("role" to "user", "content" to prompt)
+                )
+                val sb = StringBuilder()
+                for (step in 0..2) {
+                    // All probes use FAST tier — probes are cheap checks, not complex reasoning
+                    val result = callLLMWithTools(msgs, toolDefs, sysPrompt, ModelTier.FAST)
+                    if (result.text.isNotBlank()) sb.append(result.text)
+                    if (result.done || result.toolCalls.isEmpty()) break
+                    // Same fix as AgentEngine: if rawContent is a complete OpenAI message
+                    // (has a "role" key), add it directly — don't wrap it in content.
+                    val rawContent = result.rawContent
+                    @Suppress("UNCHECKED_CAST")
+                    if (rawContent is Map<*, *> && (rawContent as Map<*, *>).containsKey("role")) {
+                        msgs += rawContent as Map<String, Any>
                     } else {
-                        msgs += mapOf("role" to "tool", "tool_call_id" to tc.id, "name" to tc.name, "content" to r)
+                        msgs += mapOf("role" to "assistant", "content" to rawContent)
+                    }
+                    for (tc in result.toolCalls) {
+                        val r = try { executeTool(tc.name, tc.args) } catch (e: Exception) { "error: ${e.message}" }
+                        if (activeProvider == "anthropic") {
+                            msgs += mapOf("role" to "user", "content" to listOf(
+                                mapOf("type" to "tool_result", "tool_use_id" to tc.id, "content" to r)
+                            ))
+                        } else {
+                            msgs += mapOf("role" to "tool", "tool_call_id" to tc.id, "name" to tc.name, "content" to r)
+                        }
                     }
                 }
+                sb.toString().trim().ifBlank { null }
             }
-            sb.toString().trim().ifBlank { null }
-        }.also { hb ->
+        ).also { hb ->
             hb.register(*ProbeHeartbeat.defaultProbes())
         }
+    }
+
+    /**
+     * Handle LOCAL-tier queries entirely on device — no LLM, no API cost.
+     * Returns a response string, or null if the query can't be handled locally
+     * (in which case the caller falls through to FAST-tier LLM).
+     */
+    private fun handleLocalQuery(query: String): String? {
+        val q = query.lowercase().trim()
+        return when {
+            // Task list
+            Regex("(show|list|what are|any|my).{0,20}(task|todo|to-do)").containsMatchIn(q) ->
+                toolListTasks()
+
+            // Who to reach out to — CRM lookup
+            Regex("(who|which).{0,30}(reach out|contact|follow.?up|overdue|haven.t talked)").containsMatchIn(q) ->
+                toolGetRelationshipHealth(mapOf("limit" to 5.0, "min_days_since" to 14.0))
+
+            // Battery
+            Regex("(battery|charge).{0,20}(level|percent|status|how much)").containsMatchIn(q) -> {
+                val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                val pct = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+                val charging = bm?.isCharging ?: false
+                if (pct < 0) null else "Battery: $pct%${if (charging) " (charging)" else ""}"
+            }
+
+            // Notifications
+            Regex("(what|any|show).{0,20}notification").containsMatchIn(q) ->
+                toolGetPendingAttention(mapOf("limit" to 5.0))
+
+            // Notes/recall
+            Regex("(recall|what did you note|what.*remember|your notes)").containsMatchIn(q) ->
+                toolRecall()
+
+            // Not handled locally
+            else -> null
+        }
+    }
+
+    /** Zero-LLM battery check. Only surfaces if critical. */
+    private fun nativeBatteryCheck(): String? {
+        val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            ?: return null
+        val pct     = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val charging = bm.isCharging
+        return if (pct in 1..19 && !charging) "Battery at $pct% — not charging" else null
+    }
+
+    /** Zero-LLM notification triage. Checks ContextStore for high-weight unread items. */
+    private fun nativeNotificationTriage(): String? {
+        return try {
+            val items = contextStore.getPendingAttention(5)
+            if (items.isEmpty()) return null
+            // Only surface items < 10 minutes old with weight >= 2.0
+            val cutoff = System.currentTimeMillis() - 10 * 60_000L
+            val urgent = items.filter { it.weight >= 2.0 && it.timestamp > cutoff }
+            if (urgent.isEmpty()) return null
+            val top = urgent.first()
+            // Surface at most one item per check, de-duped by title
+            top.title.take(80)
+        } catch (_: Exception) { null }
     }
 
     // ── Per-request streaming writer (Ollama token forwarding) ───
@@ -312,13 +544,17 @@ Start: introduce yourself in one sentence, then ask for their name."""
     private fun callLLMWithTools(
         messages: List<Map<String, Any>>,
         toolDefs: List<ToolDef>,
-        sysPrompt: String
-    ): AgentResult = when (activeProvider) {
-        "anthropic" -> anthropicWithTools(messages, toolDefs, sysPrompt)
-        "openai"    -> openaiWithTools(messages, toolDefs, "https://api.openai.com/v1/chat/completions", sysPrompt)
-        "groq"      -> openaiWithTools(messages, toolDefs, "https://api.groq.com/openai/v1/chat/completions", sysPrompt)
-        "ollama"    -> ollamaWithTools(messages, toolDefs, sysPrompt)
-        else        -> AgentResult("Unknown provider: $activeProvider", toolCalls = emptyList(), done = true)
+        sysPrompt: String,
+        tier: ModelTier = ModelTier.FULL
+    ): AgentResult {
+        val model = modelForTier(tier)
+        return when (activeProvider) {
+            "anthropic" -> anthropicWithTools(messages, toolDefs, sysPrompt, model)
+            "openai"    -> openaiWithTools(messages, toolDefs, "https://api.openai.com/v1/chat/completions", sysPrompt, model)
+            "grok"      -> openaiWithTools(messages, toolDefs, "https://api.x.ai/v1/chat/completions", sysPrompt, model)
+            "ollama"    -> ollamaWithTools(messages, toolDefs, sysPrompt)
+            else        -> AgentResult("Unknown provider: $activeProvider", toolCalls = emptyList(), done = true)
+        }
     }
 
     // ── Task storage ──────────────────────────────────────────────
@@ -432,9 +668,10 @@ Start: introduce yourself in one sentence, then ask for their name."""
             "List all current tasks with their status and priority",
             emptyMap(), emptyList()),
         ToolDef("add_task",
-            "Add a new task to the task list",
+            "Add a single, specific task to the task list. Each task must represent ONE action. " +
+            "Never combine multiple unrelated actions into one task. Never add context from other tasks into notes.",
             mapOf(
-                "title"    to mapOf("type" to "string", "description" to "Task title"),
+                "title"    to mapOf("type" to "string", "description" to "Task title — one specific action, e.g. 'Text Josh to catch up'"),
                 "priority" to mapOf("type" to "string", "description" to "Priority: high, medium, or low"),
                 "notes"    to mapOf("type" to "string", "description" to "Optional notes or context")
             ), listOf("title")),
@@ -449,10 +686,17 @@ Start: introduce yourself in one sentence, then ask for their name."""
             "Mark a task as complete",
             mapOf("id" to mapOf("type" to "string", "description" to "Task ID to mark complete")),
             listOf("id")),
+        ToolDef("delete_task",
+            "Permanently delete a task from the list by ID",
+            mapOf("id" to mapOf("type" to "string", "description" to "Task ID to delete")),
+            listOf("id")),
+        ToolDef("clear_completed_tasks",
+            "Remove all completed (done) tasks from the list in one operation",
+            emptyMap(), emptyList()),
 
         // ── Memory ────────────────────────────────────────────────
         ToolDef("remember",
-            "Store a note or piece of information for later recall",
+            "Store a personal note or fact for later recall. Use this for information, observations, and preferences — NOT for to-do items (use add_task for those)",
             mapOf("note" to mapOf("type" to "string", "description" to "The information to store")),
             listOf("note")),
 
@@ -484,6 +728,72 @@ Start: introduce yourself in one sentence, then ask for their name."""
             "Suggest who you should reach out to based on relationship drift and interaction patterns",
             mapOf("threshold_days" to mapOf("type" to "integer", "description" to "Days of silence before flagging (default 21)")),
             emptyList()),
+        ToolDef("get_followup_contacts",
+            "Return all contacts the user has explicitly flagged for follow-up, with their notes and last-contact dates. ALWAYS call this first when the user asks to review people, check follow-ups, or says 'who do I need to follow up with'. Each contact's notes contain the reason for follow-up — use them to propose specific tasks or draft messages.",
+            emptyMap(), emptyList()),
+        ToolDef("flag_followup",
+            "Set or clear the follow-up flag on a contact. Use this when the user says they want to remember to follow up with someone, or when you finish a follow-up and want to clear the flag.",
+            mapOf(
+                "name"    to mapOf("type" to "string", "description" to "Contact name"),
+                "enabled" to mapOf("type" to "boolean", "description" to "true to flag for follow-up, false to clear the flag")
+            ), listOf("name", "enabled")),
+        ToolDef("draft_outreach_message",
+            "Package a contact's full profile context and return it ready for message drafting. Use this to compose a warm, context-aware message (text, email, or DM) referencing real details from the relationship.",
+            mapOf(
+                "name"    to mapOf("type" to "string", "description" to "Contact name"),
+                "medium"  to mapOf("type" to "string", "description" to "text | email | whatsapp | dm (default: text)"),
+                "tone"    to mapOf("type" to "string", "description" to "warm | casual | professional | funny (default: warm and friendly)"),
+                "context" to mapOf("type" to "string", "description" to "Extra context from user about what they want to say")
+            ), listOf("name")),
+        ToolDef("set_contact_frequency",
+            "Set a recurring contact-frequency goal for someone (daily/weekly/biweekly/monthly/quarterly). The agent will nudge when the user is overdue.",
+            mapOf(
+                "name"        to mapOf("type" to "string",  "description" to "Contact name"),
+                "frequency"   to mapOf("type" to "string",  "description" to "daily | weekly | biweekly | monthly | quarterly"),
+                "custom_days" to mapOf("type" to "integer", "description" to "Custom interval in days if frequency is not a preset")
+            ), listOf("name", "frequency")),
+        ToolDef("get_birthday_reminders",
+            "Return upcoming birthdays from device contacts within the next N days.",
+            mapOf("days_ahead" to mapOf("type" to "integer", "description" to "How many days ahead to look (default 30)")),
+            emptyList()),
+        ToolDef("schedule_social",
+            "Create a calendar event for a social activity with a specific person (coffee, lunch, call, game night, etc.).",
+            mapOf(
+                "name"             to mapOf("type" to "string",  "description" to "Contact name"),
+                "activity"         to mapOf("type" to "string",  "description" to "Type of activity (coffee, lunch, call, etc.)"),
+                "date_time"        to mapOf("type" to "string",  "description" to "ISO 8601 date-time string"),
+                "duration_minutes" to mapOf("type" to "integer", "description" to "Duration in minutes (default 60)")
+            ), listOf("name", "activity", "date_time")),
+        ToolDef("get_interaction_history",
+            "Return full interaction timeline for a contact: notes, call log, and recent SMS excerpts combined in chronological view.",
+            mapOf(
+                "name"  to mapOf("type" to "string",  "description" to "Contact name"),
+                "limit" to mapOf("type" to "integer", "description" to "Max entries per category (default 20)")
+            ), listOf("name")),
+        ToolDef("log_sentiment",
+            "Record how someone is doing right now. Use this when the user mentions how a contact is feeling or what's going on in their life.",
+            mapOf(
+                "name"      to mapOf("type" to "string", "description" to "Contact name"),
+                "sentiment" to mapOf("type" to "string", "description" to "great | ok | struggling | busy"),
+                "note"      to mapOf("type" to "string", "description" to "Optional detail (e.g. 'new job, stressed about move')")
+            ), listOf("name", "sentiment")),
+        ToolDef("suggest_conversation_topics",
+            "Generate specific conversation starters for a contact based on their profile, notes, and relationship history. Call before reaching out if the user seems unsure what to say.",
+            mapOf("name" to mapOf("type" to "string", "description" to "Contact name")),
+            listOf("name")),
+        ToolDef("bulk_relationship_review",
+            "Comprehensive review: follow-up flags + relationship drift + social goals status + upcoming birthdays — all in one call. Use this when user asks to 'review people', 'check in on relationships', or 'what's my social situation'.",
+            emptyMap(), emptyList()),
+        ToolDef("create_social_goal",
+            "Set a recurring relationship goal for a contact (e.g. 'monthly coffee with Josh'). Stored and tracked by the agent.",
+            mapOf(
+                "name"      to mapOf("type" to "string", "description" to "Contact name"),
+                "frequency" to mapOf("type" to "string", "description" to "daily | weekly | biweekly | monthly | quarterly"),
+                "note"      to mapOf("type" to "string", "description" to "What the goal is about (e.g. 'keep mentor relationship alive')")
+            ), listOf("name", "frequency")),
+        ToolDef("get_social_goals",
+            "List all social goals (contact-frequency targets) and whether each is currently on track or overdue.",
+            emptyMap(), emptyList()),
 
         // ── Communication (queued — require approval) ─────────────
         ToolDef("call_contact",
@@ -523,25 +833,85 @@ Start: introduce yourself in one sentence, then ask for their name."""
             "Set onboarding_complete:true when the initial profile collection is finished.",
             mapOf(
                 "name"                to mapOf("type" to "string",  "description" to "User's preferred name"),
-                "projects"            to mapOf("type" to "array",   "description" to "Active projects: [{name,description,termux_path,status,next_action}]"),
-                "social_goals"        to mapOf("type" to "array",   "description" to "Relationship goals: [{person,relationship,frequency_days}]"),
-                "schedule"            to mapOf("type" to "object",  "description" to "Work schedule: {timezone,work_start,work_end}"),
-                "focus_areas"         to mapOf("type" to "array",   "description" to "Main focus areas e.g. ['project development','social networking']"),
+                "projects"            to mapOf("type" to "array",   "items" to mapOf("type" to "object", "additionalProperties" to true),
+                                               "description" to "Active projects: [{name,description,termux_path,status,next_action}]"),
+                "social_goals"        to mapOf("type" to "array",   "items" to mapOf("type" to "object", "additionalProperties" to true),
+                                               "description" to "Relationship goals: [{person,relationship,frequency_days}]"),
+                "schedule"            to mapOf("type" to "object",  "additionalProperties" to true,
+                                               "description" to "Work schedule: {timezone,work_start,work_end}"),
+                "focus_areas"         to mapOf("type" to "array",   "items" to mapOf("type" to "string"),
+                                               "description" to "Main focus areas e.g. ['project development','social networking']"),
                 "onboarding_complete" to mapOf("type" to "boolean", "description" to "Set true when profile collection is done")
             ), emptyList()),
 
+        // ── Screen interaction (requires Accessibility Service) ───
+        ToolDef("take_screenshot",
+            "Capture the current screen and analyze it with vision AI. Returns a description of what's visible: " +
+            "app name, text content (quoted verbatim), and tap coordinates for interactive elements. " +
+            "Use after launching an app to read its content. Also works for reading emails, messages, web pages.",
+            mapOf(
+                "query" to mapOf("type" to "string", "description" to "What to focus on, e.g. 'email subject and body' or 'find the reply button'. Leave blank for a general description.")
+            ), emptyList()),
+        ToolDef("get_screen_text",
+            "Extract all visible text from the current screen using the accessibility tree — much faster than take_screenshot. " +
+            "Use this first when you just need to read text content (emails, messages, lists). " +
+            "Fall back to take_screenshot if the screen is complex or you need coordinates.",
+            emptyMap(), emptyList()),
+        ToolDef("tap_screen",
+            "Tap at a specific pixel coordinate. Use coordinates from take_screenshot or get_screen_text analysis. " +
+            "Wait ~800ms after tapping before calling take_screenshot or get_screen_text to let the UI settle.",
+            mapOf(
+                "x" to mapOf("type" to "number", "description" to "X pixel coordinate (from left edge)"),
+                "y" to mapOf("type" to "number", "description" to "Y pixel coordinate (from top edge)")
+            ), listOf("x", "y")),
+        ToolDef("swipe_screen",
+            "Swipe between two points. Use for scrolling (swipe up = scroll down content), pull-to-refresh, or navigation.",
+            mapOf(
+                "x1"          to mapOf("type" to "number",  "description" to "Start X"),
+                "y1"          to mapOf("type" to "number",  "description" to "Start Y"),
+                "x2"          to mapOf("type" to "number",  "description" to "End X"),
+                "y2"          to mapOf("type" to "number",  "description" to "End Y"),
+                "duration_ms" to mapOf("type" to "integer", "description" to "Swipe duration ms (default 300; use 600 for slow scroll)")
+            ), listOf("x1", "y1", "x2", "y2")),
+        ToolDef("press_back",
+            "Press the Android back button. Use to exit an app or go back a screen.",
+            emptyMap(), emptyList()),
+        ToolDef("press_home",
+            "Press the Android home button to return to the launcher.",
+            emptyMap(), emptyList()),
+
         // ── Termux bridge ─────────────────────────────────────────
         ToolDef("run_shell",
-            "Run a shell command via the Termux bridge. " +
-            "Read-only commands (ls, git status, cat, grep…) execute immediately. " +
-            "Mutation commands (git commit, rm, pip install…) are queued for user approval. " +
-            "Returns stdout+stderr. Requires the VoiceOS bridge daemon to be running in Termux.",
+            "Run ANY shell command in Termux via the file bridge. " +
+            "ALL commands execute immediately and return their output — use multiple run_shell calls to chain steps. " +
+            "For multi-step tasks (e.g. git clone → check error → configure credentials → retry): " +
+            "inspect each result and call run_shell again based on what you see. " +
+            "Read-only commands timeout at 30s. Write operations (git clone, npm install, pip install, make) timeout at 3 minutes. " +
+            "Output starts with '[exit N]' if the command failed (non-zero exit code). " +
+            "Do NOT assume directory paths — ask the user or check their profile termux_path fields.",
             mapOf(
-                "command" to mapOf("type" to "string",  "description" to "Shell command to run, e.g. 'git status --short' or 'ls ~/Dev'"),
-                "workdir" to mapOf("type" to "string",  "description" to "Working directory, e.g. ~/Dev/myproject (default: ~)")
+                "command" to mapOf("type" to "string", "description" to "Shell command to run"),
+                "workdir" to mapOf("type" to "string", "description" to "Working directory in Termux (ask user if unsure; default: ~)")
             ), listOf("command")),
+        ToolDef("git_setup_credential",
+            "Configure git credentials in Termux so HTTPS clones work without prompting. " +
+            "Stores a Personal Access Token (PAT) for a git host. " +
+            "Run this when git clone fails with authentication errors.",
+            mapOf(
+                "host"     to mapOf("type" to "string", "description" to "Git host, e.g. github.com or gitlab.com"),
+                "username" to mapOf("type" to "string", "description" to "Git username"),
+                "token"    to mapOf("type" to "string", "description" to "Personal Access Token or password")
+            ), listOf("host", "username", "token")),
+        ToolDef("git_clone",
+            "Clone a git repository into Termux. Handles the full workflow: " +
+            "checks for existing clone, runs git clone, verifies success, and reports any auth errors with next steps.",
+            mapOf(
+                "url"     to mapOf("type" to "string", "description" to "Repository URL (HTTPS or SSH)"),
+                "workdir" to mapOf("type" to "string", "description" to "Parent directory to clone into (default: ~)"),
+                "name"    to mapOf("type" to "string", "description" to "Custom folder name for the clone (optional)")
+            ), listOf("url")),
         ToolDef("get_bridge_setup",
-            "Get setup instructions and current status for the Termux bridge. Call this when the user asks how to connect Termux, or when run_shell times out.",
+            "Get Termux bridge setup status and instructions. Call this if run_shell times out or bridge may not be configured.",
             emptyMap(), emptyList()),
 
         // ── Context discovery ─────────────────────────────────────
@@ -571,7 +941,124 @@ Start: introduce yourself in one sentence, then ask for their name."""
             emptyMap(), emptyList()),
         ToolDef("get_discovery_status",
             "Show the status of the local context index: when each data type was last scanned and how many documents are indexed.",
-            emptyMap(), emptyList())
+            emptyMap(), emptyList()),
+
+        // ── Quick actions ─────────────────────────────────────────────
+        ToolDef("set_timer",
+            "Set a countdown timer for a specified number of minutes (or seconds). The timer app will alert when done.",
+            mapOf(
+                "duration_minutes" to mapOf("type" to "number",  "description" to "Timer duration in minutes (can be fractional, e.g. 0.5 for 30s)"),
+                "label"            to mapOf("type" to "string",  "description" to "Optional label for the timer")
+            ), listOf("duration_minutes")),
+
+        ToolDef("media_control",
+            "Control media playback — play, pause, skip to next track, go to previous track, or stop.",
+            mapOf("action" to mapOf("type" to "string", "description" to "One of: play, pause, next, previous, stop")),
+            listOf("action")),
+
+        ToolDef("open_url",
+            "Open a URL in the device browser.",
+            mapOf("url" to mapOf("type" to "string", "description" to "Full URL to open, e.g. https://example.com")),
+            listOf("url")),
+
+        ToolDef("search_contacts",
+            "Search device contacts by name. Returns matching contacts with phone numbers.",
+            mapOf(
+                "query"  to mapOf("type" to "string",  "description" to "Name or partial name to search"),
+                "limit"  to mapOf("type" to "integer", "description" to "Max results to return (default 10)")
+            ), listOf("query")),
+
+        ToolDef("get_network_info",
+            "Get detailed network info: WiFi SSID, IP address, signal strength, and mobile carrier/data type.",
+            emptyMap(), emptyList()),
+
+        ToolDef("get_storage_info",
+            "Get internal storage usage: total, used, and available space in GB.",
+            emptyMap(), emptyList()),
+
+        ToolDef("set_ringer_mode",
+            "Set phone ringer mode.",
+            mapOf("mode" to mapOf("type" to "string", "description" to "Mode: normal, vibrate, or silent")),
+            listOf("mode")),
+
+        ToolDef("toggle_flashlight",
+            "Toggle the device flashlight (torch) on or off.",
+            mapOf("enable" to mapOf("type" to "boolean", "description" to "true to turn on, false to turn off")),
+            listOf("enable")),
+
+        ToolDef("open_settings_screen",
+            "Open a specific Android settings screen.",
+            mapOf("screen" to mapOf("type" to "string",
+                "description" to "Settings screen to open: wifi, bluetooth, battery, display, sound, apps, " +
+                "accessibility, notifications, location, storage, developer, about, date_time, language, security, nfc, hotspot")),
+            listOf("screen")),
+
+        ToolDef("list_installed_apps",
+            "List all installed apps on the device, optionally filtered by name search.",
+            mapOf("filter" to mapOf("type" to "string", "description" to "Optional name filter — only return apps matching this substring")),
+            emptyList()),
+
+        ToolDef("fetch_webpage",
+            "Fetch a web page URL and return its text content (HTML stripped). Good for reading articles, documentation, or any specific page. Use web_search first to find URLs, then fetch_webpage to read them.",
+            mapOf(
+                "url"       to mapOf("type" to "string",  "description" to "Full URL to fetch"),
+                "max_chars" to mapOf("type" to "integer", "description" to "Max characters to return (default 3000)")
+            ), listOf("url")),
+
+        ToolDef("create_contact",
+            "Open the contacts app to create a new contact with the given details.",
+            mapOf(
+                "name"  to mapOf("type" to "string", "description" to "Contact full name"),
+                "phone" to mapOf("type" to "string", "description" to "Phone number"),
+                "email" to mapOf("type" to "string", "description" to "Email address (optional)"),
+                "notes" to mapOf("type" to "string", "description" to "Notes (optional)")
+            ), listOf("name")),
+
+        // ── Advanced screen automation ─────────────────────────────────
+        ToolDef("type_text",
+            "Type text into the currently focused input field using accessibility. " +
+            "First tap an input field with tap_screen, then call type_text to fill it.",
+            mapOf("text" to mapOf("type" to "string", "description" to "Text to type into the focused field")),
+            listOf("text")),
+
+        ToolDef("long_press_screen",
+            "Long-press at a pixel coordinate. Use for context menus, text selection, or drag-and-drop initiation.",
+            mapOf(
+                "x"           to mapOf("type" to "number",  "description" to "X pixel coordinate (from left)"),
+                "y"           to mapOf("type" to "number",  "description" to "Y pixel coordinate (from top)"),
+                "duration_ms" to mapOf("type" to "integer", "description" to "Hold duration in ms (default 800)")
+            ), listOf("x", "y")),
+
+        ToolDef("pull_notification_shade",
+            "Pull down the notification shade to see all notifications. Use before reading notifications if the panel is closed.",
+            emptyMap(), emptyList()),
+
+        ToolDef("open_quick_settings",
+            "Open the Quick Settings panel (expanded notification shade with toggles for WiFi, Bluetooth, flashlight, etc.).",
+            emptyMap(), emptyList()),
+
+        ToolDef("get_foreground_app",
+            "Get the name and package of the app currently in the foreground (what's visible on screen).",
+            emptyMap(), emptyList()),
+
+        // ── Intelligence & planning ───────────────────────────────────
+        ToolDef("morning_briefing",
+            "Generate a comprehensive morning briefing: today's date/time, battery, active tasks, calendar events today, " +
+            "pending notifications, and relationship nudges. Use this when the user says 'good morning' or asks for a daily summary.",
+            emptyMap(), emptyList()),
+
+        ToolDef("prioritize_tasks",
+            "Analyze all current tasks and return them ranked by urgency and importance with brief reasoning. " +
+            "Suggests which task to work on next.",
+            emptyMap(), emptyList()),
+
+        ToolDef("summarize_sms_thread",
+            "Read and summarize an SMS conversation with a contact. Returns a concise summary of the conversation, " +
+            "key points, and suggested reply if appropriate.",
+            mapOf(
+                "contact" to mapOf("type" to "string",  "description" to "Contact name or phone number"),
+                "limit"   to mapOf("type" to "integer", "description" to "Number of messages to include (default 20)")
+            ), listOf("contact"))
     )
 
     // ════════════════════════════════════════════════════════════════
@@ -605,6 +1092,11 @@ Start: introduce yourself in one sentence, then ask for their name."""
         val meta = rel[name.lowercase()] ?: emptyMap<String, Any>()
 
         val sb = StringBuilder("=== $name ===\n")
+
+        // Follow-up flag — surface prominently so the agent acts on it
+        if (meta["followUp"] as? Boolean == true) {
+            sb.appendLine("⚑ FLAGGED FOR FOLLOW-UP — check notes below for the reason and propose a specific action.")
+        }
 
         // Basic info from device contacts
         val number = resolveContact(name)
@@ -800,6 +1292,345 @@ Start: introduce yourself in one sentence, then ask for their name."""
         }
     }
 
+    private fun toolGetFollowupContacts(): String {
+        val rel = loadRelationships()
+        val followups = rel.filter { (_, entry) -> entry["followUp"] as? Boolean == true }
+        if (followups.isEmpty()) return "No contacts are currently flagged for follow-up.\n(Tip: the user can tap 🔔 on any contact card in the People panel to flag them.)"
+        val sb = StringBuilder("Follow-up contacts (${followups.size} flagged):\n")
+        followups.forEach { (key, entry) ->
+            val displayName = (entry["displayName"] as? String)?.takeIf { it.isNotBlank() }
+                ?: key.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.titlecase() } }
+            val daysSince = daysSinceLastDeviceContact(displayName) ?: daysSinceLastDeviceContact(key)
+            sb.appendLine("\n── $displayName ──")
+            (entry["type"] as? String)?.let { sb.appendLine("  Relationship: $it") }
+            if (daysSince != null) sb.appendLine("  Last contact: ${daysSince}d ago")
+            val notesRaw = entry["notes"] as? String ?: ""
+            if (notesRaw.isNotBlank()) {
+                sb.appendLine("  Notes:")
+                notesRaw.lines().filter { it.isNotBlank() }.forEach { line ->
+                    sb.appendLine("    $line")
+                }
+            } else {
+                sb.appendLine("  No notes — ask the user what they need to follow up about.")
+            }
+        }
+        sb.appendLine("\nINSTRUCTION: For each person above, read their notes carefully and propose a SPECIFIC task or action (e.g. 'Text Josh about the payment plan' or 'Call Sarah to schedule coffee'). Add each as a separate task with add_task if the user confirms.")
+        return sb.toString().trimEnd()
+    }
+
+    private fun toolFlagFollowup(args: Map<String, Any>): String {
+        val name    = args["name"]    as? String  ?: return "Missing: name"
+        val enabled = when (val e = args["enabled"]) {
+            is Boolean -> e
+            is String  -> e.equals("true", ignoreCase = true)
+            else       -> return "Missing: enabled (true/false)"
+        }
+        val rel   = loadRelationships()
+        val key   = name.lowercase()
+        val entry = rel.getOrPut(key) { mutableMapOf("notes" to "", "interactionCount" to 0.0) }.toMutableMap()
+        entry["followUp"] = enabled
+        rel[key] = entry
+        saveRelationships(rel)
+        return if (enabled) "$name flagged for follow-up." else "Follow-up cleared for $name."
+    }
+
+    /** Draft context packaged for outreach message composition. */
+    private fun toolDraftOutreachMessage(args: Map<String, Any>): String {
+        val name    = args["name"]    as? String ?: return "Missing: name"
+        val tone    = args["tone"]    as? String ?: "warm and friendly"
+        val medium  = args["medium"]  as? String ?: "text"
+        val context = args["context"] as? String  // optional extra context from user
+        val profile = toolGetContactProfile(mapOf("name" to name))
+        return buildString {
+            appendLine("=== Draft outreach to $name ===")
+            appendLine("Medium: $medium | Tone: $tone")
+            if (!context.isNullOrBlank()) appendLine("User context: $context")
+            appendLine()
+            appendLine(profile)
+            appendLine()
+            appendLine("Using the profile above, compose a $medium message that:")
+            appendLine("• Opens naturally based on the last interaction or notes")
+            appendLine("• References something specific (topic, shared memory, their situation)")
+            appendLine("• Is appropriately brief (1-3 sentences for text, short paragraph for email)")
+            appendLine("• Matches a $tone tone")
+            appendLine("• Ends with a soft call-to-action (catch up, grab coffee, quick call)")
+            appendLine()
+            appendLine("Write ONLY the message body — no labels or explanation.")
+        }.trimEnd()
+    }
+
+    /** Set a recurring contact frequency goal for a person. */
+    private fun toolSetContactFrequency(args: Map<String, Any>): String {
+        val name  = args["name"]      as? String ?: return "Missing: name"
+        val freq  = args["frequency"] as? String ?: return "Missing: frequency (daily/weekly/biweekly/monthly/quarterly)"
+        val days  = when (freq.lowercase()) {
+            "daily"      -> 1;  "weekly" -> 7;  "biweekly" -> 14
+            "monthly"    -> 30; "quarterly" -> 90
+            else         -> (args["custom_days"] as? Double)?.toInt() ?: 30
+        }
+        val rel   = loadRelationships()
+        val key   = name.lowercase()
+        val entry = rel.getOrPut(key) { mutableMapOf("notes" to "", "interactionCount" to 0.0) }.toMutableMap()
+        entry["frequency"]     = freq.lowercase()
+        entry["frequencyDays"] = days.toDouble()
+        rel[key] = entry
+        saveRelationships(rel)
+        return "Frequency for $name set to $freq (every $days days). I'll nudge you when you're overdue."
+    }
+
+    /** Upcoming birthdays from device contacts within the next N days. */
+    private fun toolGetBirthdayReminders(args: Map<String, Any>): String {
+        val daysAhead = (args["days_ahead"] as? Double)?.toInt() ?: 30
+        val birthdays = mutableListOf<Triple<String, Int, Int>>()   // name, month, day
+        try {
+            context.contentResolver.query(
+                ContactsContract.Data.CONTENT_URI,
+                arrayOf(ContactsContract.CommonDataKinds.Event.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Event.START_DATE),
+                "${ContactsContract.Data.MIMETYPE} = ? AND ${ContactsContract.CommonDataKinds.Event.TYPE} = ?",
+                arrayOf(ContactsContract.CommonDataKinds.Event.CONTENT_ITEM_TYPE,
+                        ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY.toString()),
+                null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val name    = c.getString(0)?.takeIf { it.isNotBlank() } ?: continue
+                    val dateStr = c.getString(1)?.takeIf { it.isNotBlank() } ?: continue
+                    val clean   = dateStr.replace("--", "")
+                    val parts   = clean.split("-")
+                    val month   = parts.getOrNull(parts.size - 2)?.toIntOrNull() ?: continue
+                    val day     = parts.getOrNull(parts.size - 1)?.toIntOrNull() ?: continue
+                    birthdays += Triple(name, month, day)
+                }
+            }
+        } catch (e: Exception) { return "Could not read birthday data: ${e.message}" }
+
+        val now      = java.util.Calendar.getInstance()
+        val nowMonth = now.get(java.util.Calendar.MONTH) + 1
+        val nowDay   = now.get(java.util.Calendar.DAY_OF_MONTH)
+        fun dayOfYear(m: Int, d: Int) = m * 31 + d
+        val nowDoy   = dayOfYear(nowMonth, nowDay)
+
+        val upcoming = birthdays.filter { (_, m, d) ->
+            var diff = dayOfYear(m, d) - nowDoy
+            if (diff < 0) diff += 372
+            diff in 0..daysAhead
+        }.sortedWith(compareBy { (_, m, d) ->
+            var diff = dayOfYear(m, d) - nowDoy; if (diff < 0) diff += 372; diff
+        })
+
+        if (upcoming.isEmpty()) return "No birthdays in the next $daysAhead days."
+        val months = java.text.DateFormatSymbols().shortMonths
+        return "Upcoming birthdays (next ${daysAhead}d):\n" +
+            upcoming.joinToString("\n") { (n, m, d) -> "• $n — ${months[m-1]} $d" }
+    }
+
+    /** Create a social calendar event with a person. */
+    private fun toolScheduleSocial(args: Map<String, Any>): String {
+        val name     = args["name"]       as? String ?: return "Missing: name"
+        val activity = args["activity"]   as? String ?: "catch-up"
+        val dateTime = args["date_time"]  as? String ?: return "Missing: date_time (ISO 8601)"
+        val duration = (args["duration_minutes"] as? Double)?.toInt() ?: 60
+        // Delegate to create_event
+        return toolCreateEvent(mapOf(
+            "title"            to "$activity with $name",
+            "start"            to dateTime,
+            "duration_minutes" to duration.toDouble(),
+            "description"      to "Social – $activity with $name. Logged by VoiceOS."
+        ))
+    }
+
+    /** Full interaction timeline for a contact: notes + calls + SMS. */
+    private fun toolGetInteractionHistory(args: Map<String, Any>): String {
+        val name  = args["name"]  as? String ?: return "Missing: name"
+        val limit = (args["limit"] as? Double)?.toInt() ?: 20
+        val rel   = loadRelationships()
+        val key   = name.lowercase()
+        val meta  = rel[key] ?: emptyMap<String, Any>()
+        val sb    = StringBuilder("=== Interaction history: $name ===\n")
+
+        // Notes timeline
+        val notesRaw = meta["notes"] as? String ?: ""
+        val noteLines = notesRaw.lines().filter { it.isNotBlank() }
+        if (noteLines.isNotEmpty()) {
+            sb.appendLine("\nNotes & interactions:")
+            noteLines.takeLast(limit).forEach { sb.appendLine("  $it") }
+        }
+
+        // Device calls
+        val number = resolveContact(name) ?: resolveContact(key)
+        if (number != null) {
+            val calls = mutableListOf<String>()
+            try {
+                context.contentResolver.query(
+                    android.provider.CallLog.Calls.CONTENT_URI,
+                    arrayOf(android.provider.CallLog.Calls.TYPE, android.provider.CallLog.Calls.DATE,
+                            android.provider.CallLog.Calls.DURATION),
+                    "${android.provider.CallLog.Calls.NUMBER} LIKE ?",
+                    arrayOf("%${number.takeLast(9)}%"),
+                    "${android.provider.CallLog.Calls.DATE} DESC"
+                )?.use { c ->
+                    while (c.moveToNext() && calls.size < limit) {
+                        val type = when (c.getInt(0)) {
+                            android.provider.CallLog.Calls.INCOMING_TYPE -> "↙ call"
+                            android.provider.CallLog.Calls.OUTGOING_TYPE -> "↗ call"
+                            else                                          -> "✗ missed"
+                        }
+                        val ts  = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US)
+                            .format(java.util.Date(c.getLong(1)))
+                        val dur = c.getLong(2)
+                        calls += "[$ts] $type${if (dur > 0) " (${dur}s)" else ""}"
+                    }
+                }
+            } catch (_: Exception) {}
+            if (calls.isNotEmpty()) { sb.appendLine("\nCall log:"); calls.forEach { sb.appendLine("  $it") } }
+
+            // SMS excerpts
+            val msgs = mutableListOf<String>()
+            try {
+                context.contentResolver.query(
+                    android.net.Uri.parse("content://sms"),
+                    arrayOf("body", "date", "type"),
+                    "address LIKE ?",
+                    arrayOf("%${number.takeLast(9)}%"),
+                    "date DESC"
+                )?.use { c ->
+                    while (c.moveToNext() && msgs.size < 5) {
+                        val dir = if (c.getInt(2) == 1) "them" else "you"
+                        val ts  = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US)
+                            .format(java.util.Date(c.getLong(1)))
+                        msgs += "[$ts] ($dir) ${c.getString(0)?.take(80) ?: ""}"
+                    }
+                }
+            } catch (_: Exception) {}
+            if (msgs.isNotEmpty()) { sb.appendLine("\nRecent SMS:"); msgs.forEach { sb.appendLine("  $it") } }
+        }
+
+        return sb.toString().trimEnd().ifBlank { "No interaction history found for $name." }
+    }
+
+    /** Record how someone is doing right now — factors into outreach timing. */
+    private fun toolLogSentiment(args: Map<String, Any>): String {
+        val name      = args["name"]      as? String ?: return "Missing: name"
+        val sentiment = args["sentiment"] as? String ?: return "Missing: sentiment (great/ok/struggling/busy)"
+        val note      = args["note"]      as? String ?: ""
+        val rel   = loadRelationships()
+        val key   = name.lowercase()
+        val entry = rel.getOrPut(key) { mutableMapOf("notes" to "", "interactionCount" to 0.0) }.toMutableMap()
+        val ts    = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US).format(java.util.Date())
+        entry["sentiment"] = mapOf("value" to sentiment.lowercase(), "ts" to ts)
+        // Also append to notes so the agent sees it in profiles
+        val prev = entry["notes"] as? String ?: ""
+        val noteText = "[$ts] Sentiment: $sentiment${if (note.isNotBlank()) " — $note" else ""}"
+        entry["notes"] = if (prev.isBlank()) noteText else "$prev\n$noteText"
+        rel[key] = entry
+        saveRelationships(rel)
+        return "Logged: $name is $sentiment${if (note.isNotBlank()) " ($note)" else ""}."
+    }
+
+    /** Conversation starter suggestions based on contact profile and notes. */
+    private fun toolSuggestConversationTopics(args: Map<String, Any>): String {
+        val name    = args["name"] as? String ?: return "Missing: name"
+        val profile = toolGetContactProfile(mapOf("name" to name))
+        return buildString {
+            appendLine("=== Conversation topics for $name ===")
+            appendLine(profile)
+            appendLine()
+            appendLine("Based on the above, suggest 3-5 specific conversation openers or topics:")
+            appendLine("• Reference real details from their notes (situations, projects, events mentioned)")
+            appendLine("• Include one check-in on something they were dealing with")
+            appendLine("• Include one topic that could deepen the relationship")
+            appendLine("• Keep each suggestion to one sentence")
+        }.trimEnd()
+    }
+
+    /** Comprehensive relationship overview: followups + drift + upcoming birthdays. */
+    private fun toolBulkRelationshipReview(args: Map<String, Any>): String {
+        val sb = StringBuilder("=== Full Relationship Review ===\n")
+
+        // Flagged follow-ups
+        val followups = toolGetFollowupContacts()
+        if (!followups.startsWith("No contacts")) {
+            sb.appendLine("\n── Follow-ups ──"); sb.appendLine(followups)
+        } else {
+            sb.appendLine("\n── Follow-ups ── None flagged.")
+        }
+
+        // Relationship drift (14+ days)
+        val health = toolGetRelationshipHealth(mapOf("limit" to 8.0, "min_days_since" to 14.0))
+        sb.appendLine("\n── Drift (14+ days) ──"); sb.appendLine(health)
+
+        // Social goals status
+        val goals = toolGetSocialGoals()
+        if (!goals.startsWith("No social")) {
+            sb.appendLine("\n── Goals ──"); sb.appendLine(goals)
+        }
+
+        // Upcoming birthdays
+        val bdays = toolGetBirthdayReminders(mapOf("days_ahead" to 14.0))
+        sb.appendLine("\n── Birthdays (14 days) ──"); sb.appendLine(bdays)
+
+        sb.appendLine("\nINSTRUCTION: For each section above, identify the single most time-sensitive action and propose it to the user.")
+        return sb.toString().trimEnd()
+    }
+
+    /** Set a recurring social goal for a person. */
+    private fun toolCreateSocialGoal(args: Map<String, Any>): String {
+        val name      = args["name"]      as? String ?: return "Missing: name"
+        val frequency = args["frequency"] as? String ?: return "Missing: frequency"
+        val note      = args["note"]      as? String ?: ""
+        // Reuse set_contact_frequency to store the cadence
+        toolSetContactFrequency(mapOf("name" to name, "frequency" to frequency))
+        val rel   = loadRelationships()
+        val key   = name.lowercase()
+        val entry = rel.getOrPut(key) { mutableMapOf("notes" to "", "interactionCount" to 0.0) }.toMutableMap()
+        @Suppress("UNCHECKED_CAST")
+        val goals = ((entry["socialGoals"] as? List<*>)?.filterIsInstance<Map<String, Any>>()
+            ?.map { it.toMutableMap() } ?: emptyList<MutableMap<String, Any>>()).toMutableList()
+        val ts = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US).format(java.util.Date())
+        goals.removeAll { (it["frequency"] as? String) == frequency }   // replace if same freq exists
+        goals += mutableMapOf("frequency" to frequency, "note" to note, "ts" to ts)
+        entry["socialGoals"] = goals
+        rel[key] = entry
+        saveRelationships(rel)
+        return "Goal set: connect with $name $frequency${if (note.isNotBlank()) " ($note)" else ""}."
+    }
+
+    /** List all social goals and whether each is on track based on last contact date. */
+    private fun toolGetSocialGoals(): String {
+        val rel = loadRelationships()
+        data class GoalStatus(val name: String, val freq: String, val days: Int, val targetDays: Int, val note: String)
+        val statuses = mutableListOf<GoalStatus>()
+        rel.forEach { (key, entry) ->
+            val freq = entry["frequency"] as? String ?: return@forEach
+            val targetDays = (entry["frequencyDays"] as? Double)?.toInt() ?: return@forEach
+            val displayName = (entry["displayName"] as? String)?.takeIf { it.isNotBlank() }
+                ?: key.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.titlecase() } }
+            val daysSince = daysSinceLastDeviceContact(displayName) ?: daysSinceLastDeviceContact(key) ?: -1
+            @Suppress("UNCHECKED_CAST")
+            val goalNote = ((entry["socialGoals"] as? List<*>)?.filterIsInstance<Map<String, Any>>()
+                ?.firstOrNull { it["frequency"] == freq }?.get("note") as? String) ?: ""
+            statuses += GoalStatus(displayName, freq, daysSince, targetDays, goalNote)
+        }
+        if (statuses.isEmpty()) return "No social goals set yet. Use set_contact_frequency or create_social_goal to add some."
+        val (overdue, onTrack) = statuses.partition { it.days >= 0 && it.days > it.targetDays }
+        return buildString {
+            if (overdue.isNotEmpty()) {
+                appendLine("⚠ Overdue:")
+                overdue.sortedByDescending { it.days - it.targetDays }.forEach { g ->
+                    val over = if (g.days >= 0) "${g.days - g.targetDays}d overdue" else "unknown"
+                    appendLine("  • ${g.name} [${g.freq}] — $over${if (g.note.isNotBlank()) " · ${g.note}" else ""}")
+                }
+            }
+            if (onTrack.isNotEmpty()) {
+                appendLine("✓ On track:")
+                onTrack.forEach { g ->
+                    val remaining = g.targetDays - g.days
+                    appendLine("  • ${g.name} [${g.freq}] — ${if (remaining > 0) "${remaining}d left" else "contact today"}${if (g.note.isNotBlank()) " · ${g.note}" else ""}")
+                }
+            }
+        }.trimEnd()
+    }
+
     // ── CRM HTTP handlers ─────────────────────────────────────────
 
     /**
@@ -879,12 +1710,22 @@ Start: introduce yourself in one sentence, then ask for their name."""
         }
         @Suppress("UNCHECKED_CAST")
         val tags = (entry["tags"] as? List<*>)?.filterIsInstance<String>() ?: emptyList<String>()
+        @Suppress("UNCHECKED_CAST")
+        val sentiment = entry["sentiment"] as? Map<String, Any>
+        val freqDays  = (entry["frequencyDays"] as? Double)?.toInt()
+        val freqOverdue = if (freqDays != null && days != null && days >= 0) days > freqDays else false
         return mapOf(
             "key"              to key,
             "name"             to displayName,
             "phone"            to phone,
             "type"             to (entry["type"] as? String ?: ""),
             "tags"             to tags,
+            "followUp"         to (entry["followUp"] as? Boolean ?: false),
+            "birthday"         to (entry["birthday"] as? String ?: ""),
+            "frequency"        to (entry["frequency"] as? String ?: ""),
+            "frequencyDays"    to (freqDays ?: 0),
+            "frequencyOverdue" to freqOverdue,
+            "sentiment"        to (sentiment ?: emptyMap<String, Any>()),
             "daysSince"        to (days ?: -1),
             "lastSeen"         to (entry["lastSeen"] as? String ?: ""),
             "notes"            to noteLines,
@@ -920,12 +1761,14 @@ Start: introduce yourself in one sentence, then ask for their name."""
     }
 
     private fun handleCrmContacts(session: IHTTPSession): Response {
-        val typeFilter = session.parameters["type"]?.firstOrNull()?.takeIf { it.isNotBlank() && it != "all" }
-        val search     = session.parameters["q"]?.firstOrNull()?.lowercase()?.trim()
-        val rel        = loadRelationships()
+        val typeFilter   = session.parameters["type"]?.firstOrNull()?.takeIf { it.isNotBlank() && it != "all" }
+        val search       = session.parameters["q"]?.firstOrNull()?.lowercase()?.trim()
+        val followupOnly = session.parameters["followup"]?.firstOrNull() == "true"
+        val rel          = loadRelationships()
         // Single pre-fetch of all call+SMS dates (2 queries total instead of 2 per contact)
         val lastContactMs = buildLastContactMap()
         var contacts   = rel.map { (key, entry) -> buildContactRecord(key, entry, lastContactMs) }
+        if (followupOnly) contacts = contacts.filter { it["followUp"] as? Boolean == true }
         if (!typeFilter.isNullOrBlank()) contacts = contacts.filter {
             (it["type"] as? String)?.equals(typeFilter, ignoreCase = true) == true
         }
@@ -948,6 +1791,16 @@ Start: introduce yourself in one sentence, then ask for their name."""
         return jsonResponse(mapOf("contacts" to contacts, "total" to rel.size, "needsAttention" to needsAttention))
     }
 
+    private fun handleCrmFollowups(): Response {
+        val rel = loadRelationships()
+        val lastContactMs = buildLastContactMap()
+        val contacts = rel
+            .filter { (_, entry) -> entry["followUp"] as? Boolean == true }
+            .map { (key, entry) -> buildContactRecord(key, entry.toMutableMap(), lastContactMs) }
+            .sortedByDescending { (it["daysSince"] as? Int ?: -1).let { d -> if (d >= 0) d else Int.MIN_VALUE } }
+        return jsonResponse(mapOf("contacts" to contacts, "total" to contacts.size))
+    }
+
     private fun handleCrmAddNote(session: IHTTPSession): Response {
         val body = parseBody(session)
         val name = body["name"] as? String ?: return jsonResponse(mapOf("error" to "missing name"), Status.BAD_REQUEST)
@@ -968,8 +1821,16 @@ Start: introduce yourself in one sentence, then ask for their name."""
         (body["type"]        as? String)?.let { entry["type"]        = it }
         (body["displayName"] as? String)?.let { entry["displayName"] = it }
         (body["phone"]       as? String)?.let { entry["phone"]       = it }
+        (body["birthday"]    as? String)?.let { entry["birthday"]    = it }
+        (body["frequency"]   as? String)?.let { entry["frequency"]   = it }
+        (body["frequencyDays"] as? Double)?.let { entry["frequencyDays"] = it }
         @Suppress("UNCHECKED_CAST")
         (body["tags"] as? List<*>)?.filterIsInstance<String>()?.let { entry["tags"] = it }
+        // followUp: accept Boolean from JSON, or string "true"/"false" for robustness
+        when (val fu = body["followUp"]) {
+            is Boolean -> entry["followUp"] = fu
+            is String  -> entry["followUp"] = fu.equals("true", ignoreCase = true)
+        }
         rel[key] = entry
         saveRelationships(rel)
         return jsonResponse(mapOf("ok" to true, "contact" to buildContactRecord(key, entry)))
@@ -1121,24 +1982,31 @@ Always confirm details before creating events. Add tasks proactively when the us
 Help the user control their device settings and apps.
 For brightness/WiFi/Bluetooth — apply the change and confirm. Report if a permission grant is needed.""",
                 toolNames          = listOf(
-                    "launch_app", "set_alarm", "get_battery", "get_volume",
+                    "launch_app", "set_alarm", "set_timer", "get_battery", "get_volume",
                     "set_volume", "set_brightness", "toggle_wifi", "toggle_bluetooth",
-                    "toggle_dnd", "get_device_info", "get_clipboard", "set_clipboard"
+                    "toggle_dnd", "toggle_flashlight", "set_ringer_mode",
+                    "get_device_info", "get_network_info", "get_storage_info",
+                    "get_clipboard", "set_clipboard", "media_control",
+                    "open_settings_screen", "list_installed_apps"
                 ),
                 triggerWords       = listOf(
                     "open", "launch", "start app", "volume", "brightness", "screen",
                     "wifi", "bluetooth", "airplane", "dnd", "do not disturb", "silent",
-                    "battery", "clipboard", "copy", "paste"
+                    "battery", "clipboard", "copy", "paste", "timer", "flashlight",
+                    "torch", "ringer", "ring", "vibrate", "storage", "network", "ip",
+                    "music", "play", "pause", "skip", "next song", "settings"
                 )
             ),
             SkillDef(
                 name               = "web_research",
-                description        = "Web search, information lookup, facts",
+                description        = "Web search, information lookup, facts, page reading",
                 systemPromptSuffix = """
 ## Active skill: Web Research
-Search the web to answer the user's question. Always use web_search first.
+Search the web to answer the user's question. Use web_search first for quick answers.
+Use fetch_webpage to read a specific URL in full (article, documentation, etc.).
+Use open_url to open a page in the browser if the user wants to see it directly.
 Summarise results concisely — bullet points where appropriate.""",
-                toolNames          = listOf("web_search", "remember", "recall"),
+                toolNames          = listOf("web_search", "fetch_webpage", "open_url", "remember", "recall"),
                 triggerWords       = listOf(
                     "search", "look up", "find out", "what is", "who is", "how to",
                     "weather", "news", "price", "stock", "score", "wiki", "google"
@@ -1150,37 +2018,171 @@ Summarise results concisely — bullet points where appropriate.""",
                 systemPromptSuffix = """
 ## Active skill: Memory
 Help the user store and retrieve information across conversations.""",
-                toolNames          = listOf("remember", "recall"),
+                toolNames          = listOf("remember", "recall", "context_search"),
                 triggerWords       = listOf(
                     "remember", "remind me", "note", "save this", "don't forget",
                     "recall", "what did i", "forgot", "memorize"
                 )
             ),
             SkillDef(
+                name               = "screen_automation",
+                description        = "Screen reading, app interaction, gesture control, UI automation",
+                systemPromptSuffix = """
+## Active skill: Screen Automation
+Automate on-screen interactions. Typical workflow:
+1. get_screen_text (fast, no vision) — reads text via accessibility tree
+2. take_screenshot (slow, with coordinates) — if you need to tap specific elements
+3. tap_screen / swipe_screen / long_press_screen — interact with elements
+4. type_text — fill in text fields (tap the field first)
+5. press_back / press_home — navigation
+
+Always wait ~800ms after each tap before reading the screen again.
+If the accessibility service is not enabled, tell the user to go to Settings › Accessibility › VoiceOS.""",
+                toolNames          = listOf(
+                    "launch_app", "get_screen_text", "take_screenshot",
+                    "tap_screen", "swipe_screen", "long_press_screen",
+                    "type_text", "press_back", "press_home",
+                    "pull_notification_shade", "open_quick_settings",
+                    "get_foreground_app", "open_url", "open_settings_screen",
+                    "get_device_info", "get_notifications"
+                ),
+                triggerWords       = listOf(
+                    "tap", "click", "press", "swipe", "scroll", "type into",
+                    "fill in", "read screen", "what's on screen", "open the",
+                    "in the app", "automate", "interact with", "navigate to",
+                    "find on screen", "read the page", "read the email",
+                    "what does it say", "close the", "go back"
+                )
+            ),
+            SkillDef(
+                name               = "daily_planning",
+                description        = "Morning briefings, daily planning, prioritization, productivity",
+                systemPromptSuffix = """
+## Active skill: Daily Planning
+Help the user plan and manage their day effectively.
+Start with morning_briefing to get a full picture, then use:
+- prioritize_tasks to rank what to work on
+- read_calendar / create_event for scheduling
+- suggest_social_outreach for relationship maintenance
+- add_task / update_task to capture and track action items
+Proactively suggest what to focus on based on priority, deadlines, and relationship health.""",
+                toolNames          = listOf(
+                    "morning_briefing", "prioritize_tasks",
+                    "list_tasks", "add_task", "update_task", "complete_task",
+                    "read_calendar", "create_event", "set_alarm", "set_timer",
+                    "get_pending_attention", "context_search",
+                    "suggest_social_outreach", "get_relationship_health",
+                    "remember", "recall", "get_device_info"
+                ),
+                triggerWords       = listOf(
+                    "morning", "good morning", "daily briefing", "today's plan",
+                    "what should i", "prioritize", "focus on", "plan my day",
+                    "what's important", "brief me", "catch me up",
+                    "what do i have today", "agenda", "plan for the day",
+                    "productivity", "goals for today", "what next"
+                )
+            ),
+            SkillDef(
+                name               = "termux_dev",
+                description        = "Termux shell, git, coding, file management, package installation",
+                systemPromptSuffix = """
+## Active skill: Termux Development
+You have access to a Termux terminal on the device via the file bridge.
+ALL run_shell calls execute immediately and return their output — you MUST inspect the result and take follow-up actions.
+
+Multi-step workflow rules:
+1. Always verify success after each command by checking the output. '[exit N]' means failure.
+2. For git clone failures: check the error, then use git_setup_credential if auth failed, then retry.
+3. For auth errors on HTTPS: use git_setup_credential(host, username, token) then git_clone again.
+4. For SSH auth errors: run_shell("cat ~/.ssh/id_ed25519.pub") to get the public key and tell the user to add it to their git host.
+5. After cloning, verify with run_shell("ls <dir>") or run_shell("git status", "<dir>").
+6. For package install failures: check error, then run_shell("pkg update") and retry.
+7. Do NOT assume paths exist — always verify with ls before cd or git operations.
+
+When the user asks to set up credentials or keys: ask for the host, username, and token/key up front before running commands.""",
+                toolNames          = listOf(
+                    "run_shell", "git_clone", "git_setup_credential", "get_bridge_setup",
+                    "get_discovery_status", "context_search",
+                    "add_task", "list_tasks", "remember", "recall",
+                    "get_device_info", "get_storage_info"
+                ),
+                triggerWords       = listOf(
+                    "git", "clone", "repo", "repository", "commit", "push", "pull",
+                    "termux", "shell", "terminal", "bash", "script", "run",
+                    "install", "npm", "pip", "pip3", "pkg install", "apt",
+                    "code", "build", "compile", "make", "python", "node", "java",
+                    "file", "directory", "mkdir", "ls ", "cat ", "ssh", "credential",
+                    "token", "github", "gitlab", "bitbucket"
+                )
+            ),
+            SkillDef(
+                name               = "research",
+                description        = "Web search, page reading, fact-finding, deep research",
+                systemPromptSuffix = """
+## Active skill: Research
+Research and information gathering. Workflow:
+1. Use web_search to find relevant URLs and get quick answers
+2. Use fetch_webpage to read the full content of a specific page
+3. Use context_search to check what you already know from device data
+4. Use remember to save key findings for later
+Combine sources for comprehensive answers. Cite where information came from.""",
+                toolNames          = listOf(
+                    "web_search", "fetch_webpage", "open_url",
+                    "context_search", "remember", "recall", "get_device_info"
+                ),
+                triggerWords       = listOf(
+                    "research", "deep dive", "find out more", "read this", "look at this page",
+                    "fetch", "what does the article say", "summarize this",
+                    "from the website", "check the page", "look up", "find out",
+                    "what is", "who is", "how does", "why does", "explain",
+                    "weather", "news", "search for", "google"
+                )
+            ),
+            SkillDef(
                 name               = "social_crm",
-                description        = "Relationship management, contact profiles, social outreach nudges",
+                description        = "Relationship management, contact profiles, follow-up tracking, social outreach",
                 systemPromptSuffix = """
 ## Active skill: Social CRM
-You are a personal relationship manager. Help the user maintain meaningful connections.
-Use get_contact_profile to pull up full relationship context before any interaction.
-Use suggest_social_outreach to identify who to reach out to when the user asks who to contact.
-Use add_relationship_note to capture context after interactions — save details like mood, topics, shared interests.
-Use log_interaction when the user tells you about a recent meeting, call, or catch-up.
-Use get_relationship_health for relationship drift analysis.
-Always combine social context with communication tools (send_sms, call_contact) for warm, contextual outreach.""",
+
+You are a personal relationship manager. When reviewing people or follow-ups, ALWAYS take concrete action — not just analysis.
+
+### When the user says "review people", "check follow-ups", "who do I need to follow up with", or "people panel":
+1. Call get_followup_contacts FIRST. Read every note carefully.
+2. For each flagged contact, propose a SPECIFIC action based on their notes (e.g. "Text Josh about the payment plan", "Call Sarah to reschedule").
+3. Ask the user if they want to create tasks and/or send messages — then do it with add_task and send_sms/call_contact.
+4. After acting on a follow-up, offer to clear the flag with flag_followup(name, false).
+
+### Other CRM actions:
+- get_contact_profile: pull full relationship context before any interaction.
+- suggest_social_outreach / get_relationship_health: identify who to reconnect with.
+- add_relationship_note: capture context after interactions.
+- log_interaction: when user tells you about a recent call or meeting.
+- flag_followup(name, true): flag someone for follow-up when user says "remind me to follow up with X" or "add X to follow-ups".
+
+### Key rule: notes in a contact profile are ACTION ITEMS, not passive history. When you see a note like "follow up about payment plan", treat it as a task to create.""",
                 toolNames          = listOf(
                     "context_search", "get_pending_attention",
                     "get_contact_profile", "add_relationship_note", "log_interaction",
                     "get_relationship_health", "suggest_social_outreach",
+                    "get_followup_contacts", "flag_followup",
+                    "draft_outreach_message", "suggest_conversation_topics",
+                    "set_contact_frequency", "create_social_goal", "get_social_goals",
+                    "get_birthday_reminders", "schedule_social",
+                    "get_interaction_history", "log_sentiment",
+                    "bulk_relationship_review",
                     "read_sms", "get_recent_calls", "call_contact", "send_sms",
-                    "remember", "recall", "get_device_info"
+                    "add_task", "create_event", "remember", "recall", "get_device_info"
                 ),
                 triggerWords       = listOf(
                     "relationship", "catch up", "catch-up", "reach out", "haven't talked",
                     "haven't spoken", "who should i call", "check in", "social", "network",
-                    "friend", "family", "colleague", "follow up with", "how is", "note about",
+                    "friend", "family", "colleague", "follow up", "how is", "note about",
                     "remember about", "last time i talked", "relationship health", "drift",
-                    "outreach", "reconnect", "keep in touch", "touch base"
+                    "outreach", "reconnect", "keep in touch", "touch base",
+                    "people panel", "review people", "who do i need to", "my contacts",
+                    "flag", "remind me to", "birthday", "draft", "message to",
+                    "frequency", "goal", "how are they doing", "conversation",
+                    "sentiment", "schedule", "coffee with", "lunch with", "call with"
                 )
             )
         )
@@ -1207,6 +2209,7 @@ Always combine social context with communication tools (send_sms, call_contact) 
             uri == "/api/status" -> jsonResponse(mapOf(
                 "provider"        to activeProvider,
                 "model"           to activeModel,
+                "model_fast"      to activeFastModel,
                 "active_provider" to activeProvider,
                 "active_model"    to activeModel,
                 "has_key"         to apiKey(activeProvider).isNotEmpty(),
@@ -1221,6 +2224,7 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 val p = session.parameters["provider"]?.firstOrNull() ?: activeProvider
                 jsonResponse(mapOf("provider" to p, "has_key" to apiKey(p).isNotEmpty()))
             }
+            uri == "/api/keys/test" && session.method == Method.GET -> handleTestKey(session)
             uri == "/api/clear"     && session.method == Method.POST -> handleClear()
             uri == "/api/chat"      && session.method == Method.POST -> handleChat(session)
             uri == "/api/agent"     && session.method == Method.POST -> handleAgent(session)
@@ -1261,8 +2265,9 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 "has_daemon" to java.io.File(bridgeDir, "done").let { false }  // daemon sets done, we just check dir
             ))
 
-            uri == "/api/crm/contacts"  && session.method == Method.GET    -> handleCrmContacts(session)
-            uri == "/api/crm/note"      && session.method == Method.POST   -> handleCrmAddNote(session)
+            uri == "/api/crm/contacts"   && session.method == Method.GET    -> handleCrmContacts(session)
+            uri == "/api/crm/followups"  && session.method == Method.GET    -> handleCrmFollowups()
+            uri == "/api/crm/note"       && session.method == Method.POST   -> handleCrmAddNote(session)
             // Accept both POST and PUT for updates (NanoHTTPD parseBody is reliable on POST)
             uri == "/api/crm/contact/update" && session.method == Method.POST -> handleCrmUpdateContact(session)
             uri == "/api/crm/contact"   && session.method == Method.PUT    -> handleCrmUpdateContact(session)
@@ -1271,6 +2276,34 @@ Always combine social context with communication tools (send_sms, call_contact) 
             uri == "/api/crm/import"    && session.method == Method.POST   -> handleCrmImport()
             uri == "/api/crm/insights"  && session.method == Method.GET    -> handleCrmInsights()
             uri == "/api/crm/profile"   && session.method == Method.GET    -> handleCrmProfile(session)
+
+            // Screen automation diagnostics
+            uri == "/api/screen/status" -> jsonResponse(mapOf(
+                "accessibility_service" to VoiceOSAccessibilityService.isAvailable(),
+                "api_level"             to android.os.Build.VERSION.SDK_INT,
+                "screenshot_supported"  to (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R),
+                "screen_size"           to VoiceOSAccessibilityService.getScreenSize().let {
+                    mapOf("width" to it.first, "height" to it.second)
+                }
+            ))
+            uri == "/api/screen/text" && session.method == Method.GET -> {
+                val text = VoiceOSAccessibilityService.getScreenText()
+                jsonResponse(mapOf(
+                    "ok"      to VoiceOSAccessibilityService.isAvailable(),
+                    "content" to text.ifBlank { "(empty — accessibility service may not be enabled)" }
+                ))
+            }
+            uri == "/api/screen/screenshot" && session.method == Method.GET -> {
+                if (!VoiceOSAccessibilityService.isAvailable())
+                    return jsonResponse(mapOf("ok" to false, "error" to "Accessibility service not enabled"))
+                if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R)
+                    return jsonResponse(mapOf("ok" to false, "error" to "Requires Android 11+"))
+                val b64 = VoiceOSAccessibilityService.takeScreenshot()
+                if (b64 == null)
+                    jsonResponse(mapOf("ok" to false, "error" to "Screenshot capture returned null"))
+                else
+                    jsonResponse(mapOf("ok" to true, "bytes" to b64.length, "preview_url" to "data:image/jpeg;base64,${b64.take(100)}…"))
+            }
 
             // Discovery
             uri == "/api/discovery/status" -> jsonResponse(mapOf(
@@ -1345,11 +2378,13 @@ Always combine social context with communication tools (send_sms, call_contact) 
     // ── /api/provider ─────────────────────────────────────────────
     private fun handleProvider(session: IHTTPSession): Response {
         val map = parseBody(session)
-        activeProvider = map["provider"] as? String ?: activeProvider
-        activeModel    = map["model"]    as? String ?: activeModel
-        (map["ollama_url"] as? String)?.takeIf { it.isNotBlank() }?.let { ollamaUrl = it.trim() }
+        activeProvider = map["provider"]   as? String ?: activeProvider
+        activeModel    = map["model"]      as? String ?: activeModel
+        (map["model_fast"]  as? String)?.takeIf { it.isNotBlank() }?.let { activeFastModel = it }
+        (map["ollama_url"]  as? String)?.takeIf { it.isNotBlank() }?.let { ollamaUrl = it.trim() }
         return jsonResponse(mapOf(
             "provider" to activeProvider, "model" to activeModel,
+            "model_fast" to activeFastModel,
             "active_provider" to activeProvider, "active_model" to activeModel,
             "has_key" to apiKey(activeProvider).isNotEmpty(), "ollama_url" to ollamaUrl
         ))
@@ -1362,6 +2397,62 @@ Always combine social context with communication tools (send_sms, call_contact) 
         val key      = map["key"]      as? String ?: return jsonResponse(mapOf("error" to "missing key"),     Status.BAD_REQUEST)
         saveKey(provider, key.trim())
         return jsonResponse(mapOf("ok" to true, "provider" to provider, "has_key" to key.isNotBlank()))
+    }
+
+    // ── /api/keys/test ────────────────────────────────────────────
+    /** Makes a minimal API call to verify the key for a given provider works. */
+    private fun handleTestKey(session: IHTTPSession): Response {
+        val provider = session.parameters["provider"]?.firstOrNull() ?: activeProvider
+        val key = apiKey(provider)
+        if (key.isBlank()) return jsonResponse(mapOf("ok" to false, "error" to "No key saved for $provider"))
+
+        return try {
+            val (code, body) = when (provider) {
+                "anthropic" -> {
+                    val payload = gson.toJson(mapOf(
+                        "model" to "claude-haiku-4-5-20251001", "max_tokens" to 8,
+                        "messages" to listOf(mapOf("role" to "user", "content" to "hi"))
+                    ))
+                    val conn = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("x-api-key", key)
+                    conn.setRequestProperty("anthropic-version", "2023-06-01")
+                    conn.doOutput = true; conn.connectTimeout = 10_000; conn.readTimeout = 15_000
+                    conn.outputStream.use { it.write(payload.toByteArray()) }
+                    val rc = conn.responseCode
+                    val b = (if (rc == 200) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText() ?: ""
+                    Pair(rc, b)
+                }
+                "openai", "grok" -> {
+                    val url = if (provider == "grok") "https://api.x.ai/v1/chat/completions"
+                              else "https://api.openai.com/v1/chat/completions"
+                    val model = if (provider == "grok") "grok-4-1-fast-non-reasoning" else "gpt-4o-mini"
+                    val payload = gson.toJson(mapOf(
+                        "model" to model, "max_tokens" to 8,
+                        "messages" to listOf(mapOf("role" to "user", "content" to "hi"))
+                    ))
+                    val conn = URL(url).openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("Authorization", "Bearer $key")
+                    conn.doOutput = true; conn.connectTimeout = 10_000; conn.readTimeout = 15_000
+                    conn.outputStream.use { it.write(payload.toByteArray()) }
+                    val rc = conn.responseCode
+                    val b = (if (rc == 200) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText() ?: ""
+                    Pair(rc, b)
+                }
+                else -> Pair(400, "Unsupported provider: $provider")
+            }
+            jsonResponse(mapOf(
+                "ok"       to (code == 200),
+                "provider" to provider,
+                "status"   to code,
+                "response" to body.take(300)
+            ))
+        } catch (e: Exception) {
+            jsonResponse(mapOf("ok" to false, "provider" to provider, "error" to (e.message ?: "network error")))
+        }
     }
 
     // ── /api/clear ────────────────────────────────────────────────
@@ -1392,13 +2483,30 @@ Always combine social context with communication tools (send_sms, call_contact) 
         val map     = parseBody(session)
         val userMsg = map["text"] as? String ?: ""
 
+        // ── Classify query — route LOCAL queries without any LLM call ──
+        val tier = classifyQuery(userMsg)
+        if (tier == ModelTier.LOCAL) {
+            val localResult = handleLocalQuery(userMsg)
+            if (localResult != null) {
+                val resp = newFixedLengthResponse(Status.OK, "text/plain; charset=utf-8", localResult)
+                resp.addHeader("Access-Control-Allow-Origin", "*")
+                return resp
+            }
+            // If local handler couldn't answer, fall through to FAST tier
+        }
+
         val pipeOut = PipedOutputStream()
         val pipeIn  = PipedInputStream(pipeOut, 65536)
 
         Thread {
             try {
+                // Set tier for this thread so callLLM lambda picks it up
+                requestTier.set(if (tier == ModelTier.LOCAL) ModelTier.FAST else tier)
                 pipeOut.writer().use { writer ->
-                    val minimal = activeProvider == "ollama"
+                    // Assistant mode: minimal context — model asks for info via tools when needed.
+                    // Agent mode: full context so probes and autonomous checks have device state.
+                    val isAgentMode = (map["mode"] as? String) == "agent"
+                    val minimal = !isAgentMode || activeProvider == "ollama"
                     val liveCtx = try { buildLiveContext(minimal = minimal) } catch (_: Exception) { "" }
                     engine.run(
                         userMsg     = userMsg,
@@ -1411,6 +2519,7 @@ Always combine social context with communication tools (send_sms, call_contact) 
             } catch (e: Exception) {
                 try { pipeOut.write("Error: ${e.message}".toByteArray()) } catch (_: Exception) {}
             } finally {
+                requestTier.remove()
                 try { pipeOut.close() } catch (_: Exception) {}
             }
         }.apply { isDaemon = true }.start()
@@ -1619,35 +2728,81 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 "set_clipboard"     -> toolSetClipboard(args)
                 // Calendar & tasks
                 "create_event"      -> toolCreateEvent(args)
-                "list_tasks"        -> toolListTasks()
-                "add_task"          -> toolAddTask(args)
-                "update_task"       -> toolUpdateTask(args)
-                "complete_task"     -> toolCompleteTask(args)
+                "list_tasks"             -> toolListTasks()
+                "add_task"               -> toolAddTask(args)
+                "update_task"            -> toolUpdateTask(args)
+                "complete_task"          -> toolCompleteTask(args)
+                "delete_task"            -> toolDeleteTask(args)
+                "clear_completed_tasks"  -> toolClearCompletedTasks()
                 // Memory & profile
                 "remember"              -> toolRemember(args)
                 "get_user_profile"      -> toolGetUserProfile()
                 "update_user_profile"   -> toolUpdateUserProfile(args)
                 // Termux bridge
-                "run_shell"             -> toolRunShell(args)
-                "get_bridge_setup"      -> toolGetBridgeSetup()
+                "run_shell"               -> toolRunShell(args)
+                "git_setup_credential"    -> toolGitSetupCredential(args)
+                "git_clone"               -> toolGitClone(args)
+                "get_bridge_setup"        -> toolGetBridgeSetup()
                 // Social CRM
                 "get_contact_profile"     -> toolGetContactProfile(args)
                 "add_relationship_note"   -> toolAddRelationshipNote(args)
                 "log_interaction"         -> toolLogInteraction(args)
                 "get_relationship_health" -> toolGetRelationshipHealth(args)
                 "suggest_social_outreach" -> toolSuggestSocialOutreach(args)
+                "get_followup_contacts"        -> toolGetFollowupContacts()
+                "flag_followup"               -> toolFlagFollowup(args)
+                "draft_outreach_message"      -> toolDraftOutreachMessage(args)
+                "set_contact_frequency"       -> toolSetContactFrequency(args)
+                "get_birthday_reminders"      -> toolGetBirthdayReminders(args)
+                "schedule_social"             -> toolScheduleSocial(args)
+                "get_interaction_history"     -> toolGetInteractionHistory(args)
+                "log_sentiment"               -> toolLogSentiment(args)
+                "suggest_conversation_topics" -> toolSuggestConversationTopics(args)
+                "bulk_relationship_review"    -> toolBulkRelationshipReview(args)
+                "create_social_goal"          -> toolCreateSocialGoal(args)
+                "get_social_goals"            -> toolGetSocialGoals()
                 // Communication (queued)
                 "call_contact"      -> toolCallContact(args)
                 "send_sms"          -> toolSendSms(args)
                 "draft_email"       -> toolDraftEmail(args)
                 "send_whatsapp"     -> toolSendWhatsapp(args)
                 "navigate"          -> toolNavigate(args)
+                // Screen interaction
+                "take_screenshot"  -> toolTakeScreenshot(args)
+                "get_screen_text"  -> toolGetScreenText()
+                "tap_screen"       -> toolTapScreen(args)
+                "swipe_screen"     -> toolSwipeScreen(args)
+                "press_back"       -> { VoiceOSAccessibilityService.pressBack(); Thread.sleep(400); "Back pressed" }
+                "press_home"       -> { VoiceOSAccessibilityService.pressHome(); Thread.sleep(400); "Home pressed" }
                 // Context discovery
                 "context_search"        -> toolContextSearch(args)
                 "get_pending_attention" -> toolGetPendingAttention(args)
                 "get_message_threads"   -> toolGetMessageThreads(args)
                 "discover_now"          -> toolDiscoverNow()
                 "get_discovery_status"  -> toolGetDiscoveryStatus()
+                // Quick actions
+                "set_timer"             -> toolSetTimer(args)
+                "media_control"         -> toolMediaControl(args)
+                "open_url"              -> toolOpenUrl(args)
+                "search_contacts"       -> toolSearchContacts(args)
+                "get_network_info"      -> toolGetNetworkInfo()
+                "get_storage_info"      -> toolGetStorageInfo()
+                "set_ringer_mode"       -> toolSetRingerMode(args)
+                "toggle_flashlight"     -> toolToggleFlashlight(args)
+                "open_settings_screen"  -> toolOpenSettingsScreen(args)
+                "list_installed_apps"   -> toolListInstalledApps(args)
+                "fetch_webpage"         -> toolFetchWebpage(args)
+                "create_contact"        -> toolCreateContact(args)
+                // Advanced screen automation
+                "type_text"             -> toolTypeText(args)
+                "long_press_screen"     -> toolLongPressScreen(args)
+                "pull_notification_shade" -> { VoiceOSAccessibilityService.pullNotificationShade(); Thread.sleep(500); "Notification shade opened" }
+                "open_quick_settings"   -> { VoiceOSAccessibilityService.openQuickSettings(); Thread.sleep(500); "Quick settings opened" }
+                "get_foreground_app"    -> toolGetForegroundApp()
+                // Intelligence & planning
+                "morning_briefing"      -> toolMorningBriefing()
+                "prioritize_tasks"      -> toolPrioritizeTasks()
+                "summarize_sms_thread"  -> toolSummarizeSmsThread(args)
                 else                -> "Unknown tool: $name"
             }
         } catch (e: Exception) {
@@ -1970,13 +3125,23 @@ Always combine social context with communication tools (send_sms, call_contact) 
     }
 
     private fun toolListTasks(): String {
-        val tasks = loadTasks()
-        if (tasks.isEmpty()) return "No tasks in the list."
-        return tasks.joinToString("\n") { t ->
-            "[${t["id"]}] [${t["priority"]}/${t["status"]}] ${t["title"]}${
-                (t["notes"] as? String)?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""
-            }"
+        val all   = loadTasks()
+        val tasks = all.filter { it["status"] != "done" }
+        if (tasks.isEmpty()) return if (all.isEmpty()) "No tasks." else "No active tasks. (${all.size - tasks.size} completed tasks hidden — use clear_completed_tasks to remove them.)"
+        val sb = StringBuilder("Tasks (${tasks.size} active) — each task is INDEPENDENT, treat them separately:\n")
+        // Group by priority for clarity
+        for (pri in listOf("high", "medium", "low")) {
+            val group = tasks.filter { (it["priority"] as? String ?: "medium") == pri }
+            if (group.isEmpty()) continue
+            sb.appendLine("── ${pri.uppercase()} ──")
+            group.forEach { t ->
+                val status = t["status"] as? String ?: "pending"
+                val notes  = (t["notes"] as? String)?.takeIf { it.isNotBlank() }
+                sb.appendLine("  [${t["id"]}] [$status] ${t["title"]}")
+                if (notes != null) sb.appendLine("        notes: $notes")
+            }
         }
+        return sb.toString().trimEnd()
     }
 
     private fun toolAddTask(args: Map<String, Any>): String {
@@ -2008,9 +3173,27 @@ Always combine social context with communication tools (send_sms, call_contact) 
         val id    = args["id"] as? String ?: return "Missing id"
         val tasks = loadTasks()
         val task  = tasks.firstOrNull { it["id"] == id } ?: return "Task $id not found"
-        val ts    = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
-        task["status"] = "done"; task["updated"] = ts; saveTasks(tasks)
-        return "Task \"${task["title"]}\" marked complete"
+        val title = task["title"] as? String ?: id
+        // Remove immediately — don't leave done tasks in the list where they can be re-triggered
+        saveTasks(tasks.also { it.removeAll { t -> t["id"] == id } })
+        return "Task \"$title\" completed and removed."
+    }
+
+    private fun toolDeleteTask(args: Map<String, Any>): String {
+        val id    = args["id"] as? String ?: return "Missing id"
+        val tasks = loadTasks()
+        val task  = tasks.firstOrNull { it["id"] == id } ?: return "Task $id not found"
+        saveTasks(tasks.also { it.removeAll { t -> t["id"] == id } })
+        return "Task \"${task["title"]}\" deleted"
+    }
+
+    private fun toolClearCompletedTasks(): String {
+        val tasks   = loadTasks()
+        val before  = tasks.size
+        saveTasks(tasks.also { it.removeAll { t -> t["status"] == "done" } })
+        val cleared = before - loadTasks().size
+        return if (cleared > 0) "Cleared $cleared completed task${if (cleared != 1) "s" else ""}"
+               else "No completed tasks to clear"
     }
 
     // ── Memory ────────────────────────────────────────────────────
@@ -2098,7 +3281,8 @@ Always combine social context with communication tools (send_sms, call_contact) 
     private fun anthropicWithTools(
         messages: List<Map<String, Any>>,
         toolDefs: List<ToolDef>,
-        sysPrompt: String
+        sysPrompt: String,
+        modelOverride: String = activeModel
     ): AgentResult {
         val key = apiKey("anthropic")
         if (key.isBlank()) return AgentResult("No Anthropic API key saved.", toolCalls = emptyList(), done = true)
@@ -2108,15 +3292,23 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 "description"  to t.description,
                 "input_schema" to mapOf("type" to "object", "properties" to t.params, "required" to t.required)
             )}
+            // System prompt as structured content block with prompt caching enabled.
+            // cache_control: ephemeral caches this block for ~5 min, cutting repeat input cost by ~90%.
+            val systemBlock = listOf(mapOf(
+                "type"          to "text",
+                "text"          to sysPrompt,
+                "cache_control" to mapOf("type" to "ephemeral")
+            ))
             val payload = gson.toJson(mapOf(
-                "model" to activeModel, "max_tokens" to 4096,
-                "system" to sysPrompt, "tools" to toolsJson, "messages" to messages
+                "model" to modelOverride, "max_tokens" to 4096,
+                "system" to systemBlock, "tools" to toolsJson, "messages" to messages
             ))
             val conn = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("x-api-key", key)
             conn.setRequestProperty("anthropic-version", "2023-06-01")
+            conn.setRequestProperty("anthropic-beta", "prompt-caching-2024-07-31")
             conn.doOutput = true; conn.connectTimeout = 15_000; conn.readTimeout = 120_000
             conn.outputStream.use { it.write(payload.toByteArray()) }
             if (conn.responseCode != 200) {
@@ -2146,9 +3338,13 @@ Always combine social context with communication tools (send_sms, call_contact) 
         messages: List<Map<String, Any>>,
         toolDefs: List<ToolDef>,
         url: String,
-        sysPrompt: String
+        sysPrompt: String,
+        modelOverride: String = activeModel
     ): AgentResult {
-        val provName = if (url.contains("groq")) "groq" else "openai"
+        val provName = when {
+            url.contains("x.ai")  -> "grok"
+            else                  -> "openai"
+        }
         val key = apiKey(provName)
         if (key.isBlank()) return AgentResult("No $provName API key saved.", toolCalls = emptyList(), done = true)
         return try {
@@ -2157,7 +3353,7 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 "parameters" to mapOf("type" to "object", "properties" to t.params, "required" to t.required)
             ))}
             val payload = gson.toJson(mapOf(
-                "model" to activeModel, "tools" to toolsJson,
+                "model" to modelOverride, "tools" to toolsJson,
                 "messages" to listOf(mapOf("role" to "system", "content" to sysPrompt)) + messages
             ))
             val conn = URL(url).openConnection() as HttpURLConnection
@@ -2186,7 +3382,17 @@ Always combine social context with communication tools (send_sms, call_contact) 
                 val args = try { gson.fromJson(fn["arguments"] as? String ?: "{}", Map::class.java) as Map<String, Any> } catch (_: Exception) { emptyMap() }
                 ToolCall(id = tc["id"] as? String ?: "", name = name, args = args)
             }
-            AgentResult(text, rawContent = msg, toolCalls = calls, done = false)
+            // Build a complete OpenAI-format assistant message to store in context.
+            // rawContent must NOT be the full msg map — AgentEngine will wrap it in
+            // {"role":"assistant","content":<rawContent>} which would double-nest it.
+            // We instead use a ready-to-add raw message and signal that via rawContent
+            // being a Map with a "role" key (AgentEngine checks for this).
+            val assistantMsg = mutableMapOf<String, Any?>(
+                "role"       to "assistant",
+                "content"    to text.ifBlank { null },   // OpenAI requires explicit null, not absent
+                "tool_calls" to rawCalls
+            )
+            AgentResult(text, rawContent = assistantMsg, toolCalls = calls, done = false)
         } catch (e: Exception) { AgentResult("$provName request failed: ${e.message}", toolCalls = emptyList(), done = true) }
     }
 
@@ -2267,7 +3473,607 @@ Always combine social context with communication tools (send_sms, call_contact) 
     }
 
     // ════════════════════════════════════════════════════════════════
+    // New expanded tool implementations
+    // ════════════════════════════════════════════════════════════════
+
+    private fun toolSetTimer(args: Map<String, Any>): String {
+        val minutes = (args["duration_minutes"] as? Double) ?: return "Missing duration_minutes"
+        val label   = args["label"] as? String ?: "Timer"
+        val seconds = (minutes * 60).toInt().coerceAtLeast(1)
+        context.startActivity(Intent(AlarmClock.ACTION_SET_TIMER).apply {
+            putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+            putExtra(AlarmClock.EXTRA_MESSAGE, label)
+            putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+        val display = if (minutes < 1.0) "${seconds}s" else if (minutes == minutes.toLong().toDouble()) "${minutes.toInt()}m" else "${minutes}m"
+        return "Timer set: $display — $label"
+    }
+
+    private fun toolMediaControl(args: Map<String, Any>): String {
+        val action = args["action"] as? String ?: return "Missing action"
+        val am = context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val keyCode = when (action.lowercase()) {
+            "play", "pause" -> android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            "next"          -> android.view.KeyEvent.KEYCODE_MEDIA_NEXT
+            "previous"      -> android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            "stop"          -> android.view.KeyEvent.KEYCODE_MEDIA_STOP
+            else            -> return "Unknown action: $action. Use: play, pause, next, previous, stop"
+        }
+        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode))
+        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, keyCode))
+        return "Media: ${action.lowercase()} dispatched"
+    }
+
+    private fun toolOpenUrl(args: Map<String, Any>): String {
+        val url = args["url"] as? String ?: return "Missing url"
+        val safeUrl = if (!url.startsWith("http")) "https://$url" else url
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+        return "Opened: $safeUrl"
+    }
+
+    private fun toolSearchContacts(args: Map<String, Any>): String {
+        val query = args["query"] as? String ?: return "Missing query"
+        val limit = (args["limit"] as? Double)?.toInt() ?: 10
+        return try {
+            val cur = context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Phone.NUMBER,
+                        ContactsContract.CommonDataKinds.Phone.TYPE),
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
+                arrayOf("%$query%"),
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
+            )
+            val seen = mutableSetOf<String>()
+            val results = mutableListOf<String>()
+            cur?.use { c ->
+                while (c.moveToNext() && results.size < limit) {
+                    val name = c.getString(0) ?: continue
+                    val num  = c.getString(1) ?: continue
+                    val key  = "${name.lowercase()}:${num.takeLast(7)}"
+                    if (key in seen) continue; seen += key
+                    val typeStr = when (c.getInt(2)) {
+                        ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE -> "mobile"
+                        ContactsContract.CommonDataKinds.Phone.TYPE_HOME   -> "home"
+                        ContactsContract.CommonDataKinds.Phone.TYPE_WORK   -> "work"
+                        else -> "phone"
+                    }
+                    results += "$name — $num ($typeStr)"
+                }
+            }
+            if (results.isEmpty()) "No contacts found matching: $query"
+            else "Contacts matching \"$query\":\n${results.joinToString("\n")}"
+        } catch (e: Exception) { "Contact search failed: ${e.message}" }
+    }
+
+    private fun toolGetNetworkInfo(): String {
+        val sb = StringBuilder()
+        try {
+            val wm = context.applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            if (wm.isWifiEnabled) {
+                val info = wm.connectionInfo
+                val ssid = info.ssid?.replace("\"", "") ?: "unknown"
+                val ip   = android.text.format.Formatter.formatIpAddress(info.ipAddress)
+                val rssi = info.rssi
+                val qual = android.net.wifi.WifiManager.calculateSignalLevel(rssi, 5)
+                sb.appendLine("WiFi: $ssid")
+                sb.appendLine("IP: $ip")
+                sb.appendLine("Signal: $qual/4 (${rssi}dBm)")
+            } else {
+                sb.appendLine("WiFi: off")
+            }
+        } catch (_: Exception) { sb.appendLine("WiFi: unavailable") }
+        try {
+            val tm = context.getSystemService(android.content.Context.TELEPHONY_SERVICE) as android.telephony.TelephonyManager
+            val carrier = tm.networkOperatorName ?: "unknown"
+            val dataState = when (tm.dataState) {
+                android.telephony.TelephonyManager.DATA_CONNECTED    -> "connected"
+                android.telephony.TelephonyManager.DATA_CONNECTING   -> "connecting"
+                android.telephony.TelephonyManager.DATA_DISCONNECTED -> "disconnected"
+                else -> "unknown"
+            }
+            sb.appendLine("Carrier: $carrier")
+            sb.appendLine("Mobile data: $dataState")
+        } catch (_: Exception) {}
+        return sb.toString().trim()
+    }
+
+    private fun toolGetStorageInfo(): String {
+        return try {
+            val stat = android.os.StatFs(android.os.Environment.getDataDirectory().path)
+            val total = stat.totalBytes / (1024L * 1024L * 1024L)
+            val avail = stat.availableBytes / (1024L * 1024L * 1024L)
+            val used  = total - avail
+            val extStat = try {
+                val es = android.os.StatFs(android.os.Environment.getExternalStorageDirectory().path)
+                "\nSD/External: ${es.availableBytes / (1024L * 1024L * 1024L)}GB free / ${es.totalBytes / (1024L * 1024L * 1024L)}GB total"
+            } catch (_: Exception) { "" }
+            "Internal storage: ${used}GB used / ${total}GB total (${avail}GB free)$extStat"
+        } catch (e: Exception) { "Storage info unavailable: ${e.message}" }
+    }
+
+    private fun toolSetRingerMode(args: Map<String, Any>): String {
+        val mode = args["mode"] as? String ?: return "Missing mode"
+        val am = context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val ringerMode = when (mode.lowercase()) {
+            "silent"  -> android.media.AudioManager.RINGER_MODE_SILENT
+            "vibrate" -> android.media.AudioManager.RINGER_MODE_VIBRATE
+            "normal"  -> android.media.AudioManager.RINGER_MODE_NORMAL
+            else      -> return "Unknown mode: $mode. Use: normal, vibrate, or silent"
+        }
+        return try {
+            am.ringerMode = ringerMode
+            "Ringer mode set to ${mode.lowercase()}"
+        } catch (e: Exception) { "Ringer mode change failed: ${e.message}" }
+    }
+
+    private fun toolToggleFlashlight(args: Map<String, Any>): String {
+        val enable = args["enable"] as? Boolean ?: return "Missing enable"
+        return try {
+            val cm = context.getSystemService(android.content.Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            val cameraId = cm.cameraIdList.firstOrNull { id ->
+                cm.getCameraCharacteristics(id)
+                    .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            } ?: return "No flash hardware found"
+            cm.setTorchMode(cameraId, enable)
+            "Flashlight ${if (enable) "on" else "off"}"
+        } catch (e: Exception) { "Flashlight failed: ${e.message}" }
+    }
+
+    private fun toolOpenSettingsScreen(args: Map<String, Any>): String {
+        val screen = args["screen"] as? String ?: return "Missing screen"
+        val action = when (screen.lowercase().replace(" ", "_").replace("-", "_")) {
+            "wifi"              -> Settings.ACTION_WIFI_SETTINGS
+            "bluetooth"         -> Settings.ACTION_BLUETOOTH_SETTINGS
+            "battery"           -> Settings.ACTION_BATTERY_SAVER_SETTINGS
+            "display"           -> Settings.ACTION_DISPLAY_SETTINGS
+            "sound"             -> Settings.ACTION_SOUND_SETTINGS
+            "apps"              -> Settings.ACTION_APPLICATION_SETTINGS
+            "accessibility"     -> Settings.ACTION_ACCESSIBILITY_SETTINGS
+            "notifications"     -> Settings.ACTION_APP_NOTIFICATION_SETTINGS
+            "location"          -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+            "storage"           -> Settings.ACTION_INTERNAL_STORAGE_SETTINGS
+            "developer"         -> Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
+            "about"             -> Settings.ACTION_DEVICE_INFO_SETTINGS
+            "date_time"         -> Settings.ACTION_DATE_SETTINGS
+            "language"          -> Settings.ACTION_LOCALE_SETTINGS
+            "security"          -> Settings.ACTION_SECURITY_SETTINGS
+            "nfc"               -> Settings.ACTION_NFC_SETTINGS
+            "hotspot"           -> Settings.ACTION_WIRELESS_SETTINGS
+            else                -> Settings.ACTION_SETTINGS
+        }
+        context.startActivity(Intent(action).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+        return "Opened $screen settings"
+    }
+
+    private fun toolListInstalledApps(args: Map<String, Any>): String {
+        val filter = (args["filter"] as? String)?.lowercase()?.trim()
+        val pm = context.packageManager
+        val apps = pm.queryIntentActivities(
+            Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) },
+            PackageManager.GET_META_DATA
+        ).map { it.loadLabel(pm).toString() }
+         .filter { filter.isNullOrBlank() || it.lowercase().contains(filter) }
+         .sorted()
+        return if (apps.isEmpty()) "No apps found${if (!filter.isNullOrBlank()) " matching: $filter" else ""}"
+               else "Installed apps (${apps.size}):\n${apps.joinToString(", ")}"
+    }
+
+    private fun toolFetchWebpage(args: Map<String, Any>): String {
+        val url      = args["url"] as? String ?: return "Missing url"
+        val maxChars = (args["max_chars"] as? Double)?.toInt() ?: 3000
+        val safeUrl  = if (!url.startsWith("http")) "https://$url" else url
+        return try {
+            val conn = java.net.URL(safeUrl).openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android; VoiceOS/1.0)")
+            conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,text/plain")
+            conn.connectTimeout = 12_000; conn.readTimeout = 20_000
+            conn.instanceFollowRedirects = true
+            val code = conn.responseCode
+            if (code >= 400) return "HTTP $code for $safeUrl"
+            val raw = conn.inputStream.bufferedReader().readText()
+            // Strip HTML tags and collapse whitespace
+            val text = raw
+                .replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), " ")
+                .replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), " ")
+                .replace(Regex("<[^>]+>"), " ")
+                .replace(Regex("&nbsp;"), " ")
+                .replace(Regex("&amp;"), "&")
+                .replace(Regex("&lt;"), "<")
+                .replace(Regex("&gt;"), ">")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+            if (text.isBlank()) "Page appears empty or is non-text content."
+            else "Content from $safeUrl:\n${text.take(maxChars)}${if (text.length > maxChars) "\n[truncated — ${text.length - maxChars} chars remaining]" else ""}"
+        } catch (e: Exception) { "Fetch failed: ${e.message}" }
+    }
+
+    private fun toolCreateContact(args: Map<String, Any>): String {
+        val name  = args["name"]  as? String ?: return "Missing name"
+        val phone = args["phone"] as? String ?: ""
+        val email = args["email"] as? String ?: ""
+        val notes = args["notes"] as? String ?: ""
+        val intent = Intent(ContactsContract.Intents.Insert.ACTION).apply {
+            type = ContactsContract.RawContacts.CONTENT_TYPE
+            if (name.isNotBlank())  putExtra(ContactsContract.Intents.Insert.NAME, name)
+            if (phone.isNotBlank()) putExtra(ContactsContract.Intents.Insert.PHONE, phone)
+            if (email.isNotBlank()) putExtra(ContactsContract.Intents.Insert.EMAIL, email)
+            if (notes.isNotBlank()) putExtra(ContactsContract.Intents.Insert.NOTES, notes)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        return "Opening contacts app to create: $name${if (phone.isNotBlank()) " ($phone)" else ""}"
+    }
+
+    private fun toolTypeText(args: Map<String, Any>): String {
+        if (!VoiceOSAccessibilityService.isAvailable())
+            return "Accessibility service not enabled. Ask the user to enable VoiceOS in Settings › Accessibility."
+        val text = args["text"] as? String ?: return "Missing text"
+        val ok = VoiceOSAccessibilityService.typeText(text)
+        return if (ok) "Typed: ${text.take(60)}${if (text.length > 60) "…" else ""}"
+               else "Could not type — no input field is focused. Use tap_screen on an input field first, then call type_text."
+    }
+
+    private fun toolLongPressScreen(args: Map<String, Any>): String {
+        if (!VoiceOSAccessibilityService.isAvailable()) return "Accessibility service not enabled"
+        val x   = (args["x"] as? Double)?.toFloat() ?: return "Missing x"
+        val y   = (args["y"] as? Double)?.toFloat() ?: return "Missing y"
+        val dur = (args["duration_ms"] as? Double)?.toLong() ?: 800L
+        val ok  = VoiceOSAccessibilityService.longPress(x, y, dur)
+        return if (ok) "Long-pressed (${x.toInt()}, ${y.toInt()}) for ${dur}ms"
+               else "Long press failed"
+    }
+
+    private fun toolGetForegroundApp(): String {
+        return try {
+            if (!VoiceOSAccessibilityService.isAvailable())
+                return "Accessibility service not enabled — enable VoiceOS in Settings › Accessibility"
+            val pkgName = VoiceOSAccessibilityService.instance
+                ?.rootInActiveWindow?.packageName?.toString() ?: return "Could not determine foreground app"
+            val pm   = context.packageManager
+            val name = try {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkgName, 0)).toString()
+            } catch (_: Exception) { pkgName }
+            "Foreground app: $name (package: $pkgName)"
+        } catch (e: Exception) { "Could not determine foreground app: ${e.message}" }
+    }
+
+    private fun toolMorningBriefing(): String {
+        val sb = StringBuilder()
+        val sdf = java.text.SimpleDateFormat("EEEE, MMMM d yyyy", java.util.Locale.US)
+        val tdf = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        sb.appendLine("## Morning Briefing — ${sdf.format(java.util.Date())}")
+        sb.appendLine("Time: ${tdf.format(java.util.Date())}")
+        sb.appendLine()
+
+        // Battery
+        try { sb.appendLine("**${toolGetBattery()}**") } catch (_: Exception) {}
+
+        // Today's calendar
+        sb.appendLine()
+        sb.appendLine("### Today's Schedule")
+        try {
+            val cal = toolReadCalendar(mapOf("days" to 1.0))
+            sb.appendLine(if (cal.startsWith("No events")) "Nothing scheduled today." else cal)
+        } catch (_: Exception) { sb.appendLine("Calendar unavailable.") }
+
+        // Active tasks
+        sb.appendLine()
+        sb.appendLine("### Tasks")
+        val tasks = loadTasks().filter { it["status"] != "done" }
+        if (tasks.isEmpty()) {
+            sb.appendLine("No pending tasks.")
+        } else {
+            val hi  = tasks.filter { it["priority"] == "high" }
+            val mid = tasks.filter { it["priority"] == "medium" }
+            if (hi.isNotEmpty()) {
+                sb.appendLine("**High priority (${hi.size}):**")
+                hi.take(3).forEach { sb.appendLine("• ${it["title"]}") }
+            }
+            if (mid.isNotEmpty()) {
+                sb.appendLine("Medium (${mid.size} tasks)")
+            }
+            sb.appendLine("Total: ${tasks.size} active tasks")
+        }
+
+        // Notifications / pending attention
+        sb.appendLine()
+        sb.appendLine("### Pending Attention")
+        try {
+            val attention = contextStore.getPendingAttention(5)
+            if (attention.isEmpty()) {
+                sb.appendLine("Inbox clear.")
+            } else {
+                attention.forEach { doc ->
+                    sb.appendLine("• [${doc.type}] ${doc.title.take(60)}")
+                }
+            }
+        } catch (_: Exception) {
+            if (isNotificationListenerEnabled()) {
+                val notifs = VoiceOSNotificationService.getRecent().take(5)
+                if (notifs.isEmpty()) sb.appendLine("No recent notifications.")
+                else notifs.forEach { n ->
+                    val app = n["app"] as? String ?: "?"
+                    val title = n["title"] as? String ?: ""
+                    sb.appendLine("• $app${if (title.isNotBlank()) ": $title" else ""}")
+                }
+            } else sb.appendLine("Notification access not enabled.")
+        }
+
+        // Social nudges
+        sb.appendLine()
+        sb.appendLine("### Relationship Nudges")
+        try {
+            val outreach = toolSuggestSocialOutreach(mapOf("threshold_days" to 14.0))
+            sb.appendLine(if (outreach.startsWith("Everyone")) "All connections are up to date." else outreach)
+        } catch (_: Exception) { sb.appendLine("CRM unavailable.") }
+
+        return sb.toString().trimEnd()
+    }
+
+    private fun toolPrioritizeTasks(): String {
+        val tasks = loadTasks().filter { it["status"] != "done" }
+        if (tasks.isEmpty()) return "No active tasks to prioritize."
+        val sb = StringBuilder("### Task Priority Analysis\n\n")
+        val high   = tasks.filter { it["priority"] == "high" }
+        val medium = tasks.filter { it["priority"] == "medium" }
+        val low    = tasks.filter { it["priority"] == "low" || it["priority"] == null }
+        if (high.isNotEmpty()) {
+            sb.appendLine("**Do first — High priority:**")
+            high.forEach { t ->
+                val status = t["status"] as? String ?: "pending"
+                sb.appendLine("• [${t["id"]}] ${t["title"]} [$status]${(t["notes"] as? String)?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""}")
+            }
+            sb.appendLine()
+        }
+        if (medium.isNotEmpty()) {
+            sb.appendLine("**Then — Medium priority (${medium.size}):**")
+            medium.take(5).forEach { t -> sb.appendLine("• [${t["id"]}] ${t["title"]}") }
+            if (medium.size > 5) sb.appendLine("  … and ${medium.size - 5} more")
+            sb.appendLine()
+        }
+        if (low.isNotEmpty()) {
+            sb.appendLine("**Later — Low priority (${low.size} tasks)**")
+        }
+        val blocked = tasks.filter { it["status"] == "blocked" }
+        if (blocked.isNotEmpty()) {
+            sb.appendLine()
+            sb.appendLine("**Blocked (needs attention):**")
+            blocked.forEach { t -> sb.appendLine("• [${t["id"]}] ${t["title"]}") }
+        }
+        val next = high.firstOrNull() ?: medium.firstOrNull() ?: low.firstOrNull()
+        if (next != null) {
+            sb.appendLine()
+            sb.appendLine("**Suggested next:** ${next["title"]}")
+        }
+        return sb.toString().trimEnd()
+    }
+
+    private fun toolSummarizeSmsThread(args: Map<String, Any>): String {
+        val contact = args["contact"] as? String ?: return "Missing contact"
+        val limit   = (args["limit"] as? Double)?.toInt() ?: 20
+        return try {
+            val number = resolveContact(contact) ?: contact
+            val suffix = number.takeLast(9)
+            val cur = context.contentResolver.query(
+                android.net.Uri.parse("content://sms"),
+                arrayOf("address", "body", "date", "type"),
+                "address LIKE ?",
+                arrayOf("%$suffix%"),
+                "date DESC"
+            )
+            val msgs = mutableListOf<Triple<String, String, Boolean>>()  // (ageStr, body, isIncoming)
+            cur?.use { c ->
+                while (c.moveToNext() && msgs.size < limit) {
+                    val body     = c.getString(1) ?: continue
+                    val date     = c.getLong(2)
+                    val incoming = c.getInt(3) == 1
+                    val age      = System.currentTimeMillis() - date
+                    val ageStr   = when {
+                        age < 3_600_000  -> "${age / 60_000}m ago"
+                        age < 86_400_000 -> "${age / 3_600_000}h ago"
+                        else             -> "${age / 86_400_000}d ago"
+                    }
+                    msgs += Triple(ageStr, body, incoming)
+                }
+            }
+            if (msgs.isEmpty()) return "No SMS conversation found with $contact"
+            val sb = StringBuilder("### SMS Thread with $contact (${msgs.size} messages)\n\n")
+            // Show most recent first in summary
+            msgs.reversed().takeLast(10).forEach { (age, body, incoming) ->
+                val who = if (incoming) contact.split(" ").first() else "You"
+                sb.appendLine("[$age] **$who**: ${body.take(120)}")
+            }
+            sb.appendLine()
+            val unread = msgs.count { it.third }
+            val lastMsg = msgs.first()
+            sb.appendLine("**Latest:** ${lastMsg.second.take(80)} (${lastMsg.first})")
+            if (unread > 0) sb.appendLine("**Unread messages:** $unread")
+            sb.toString().trimEnd()
+        } catch (e: Exception) { "SMS read failed: ${e.message}" }
+    }
+
+    // ════════════════════════════════════════════════════════════════
     // Context discovery tools
+    // ════════════════════════════════════════════════════════════════
+    // Screen interaction tools
+    // ════════════════════════════════════════════════════════════════
+
+    private fun toolTakeScreenshot(args: Map<String, Any>): String {
+        if (!VoiceOSAccessibilityService.isAvailable()) {
+            return "Accessibility service not enabled. Ask the user to go to Settings › Accessibility › VoiceOS and enable it, then try again."
+        }
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+            return "Screenshot capture requires Android 11+. Use get_screen_text instead."
+        }
+        val query = (args["query"] as? String)?.takeIf { it.isNotBlank() }
+
+        // Small settle delay in case we just dispatched a tap
+        Thread.sleep(600)
+
+        val base64 = VoiceOSAccessibilityService.takeScreenshot()
+            ?: return "Screenshot capture failed — service may need a moment. Try again."
+
+        val (w, h) = VoiceOSAccessibilityService.getScreenSize()
+        return callVisionLlm(base64, buildVisionPrompt(w, h, query))
+    }
+
+    private fun buildVisionPrompt(screenW: Int, screenH: Int, query: String?): String = buildString {
+        appendLine("You are analyzing a screenshot from an Android phone.")
+        appendLine("Screen resolution: ${screenW}×${screenH} pixels. Coordinates are from the top-left corner.")
+        appendLine()
+        if (!query.isNullOrBlank()) {
+            appendLine("Focus on: $query")
+            appendLine()
+        }
+        appendLine("Provide:")
+        appendLine("1. App/screen name and what is being displayed")
+        appendLine("2. Key text content — quote important text verbatim (email body, message content, etc.)")
+        appendLine("3. Interactive elements with their CENTER pixel coordinates in the format (x, y):")
+        appendLine("   List every visible button, link, input field, back arrow, menu item")
+        appendLine("   Example: \"Reply button — tap at (540, 1820)\"")
+        if (!query.isNullOrBlank()) {
+            appendLine()
+            appendLine("Then directly answer: $query")
+        }
+    }
+
+    /**
+     * Call the active LLM provider with an image. Tries vision-capable endpoint.
+     * Returns a text description of the image.
+     */
+    private fun callVisionLlm(base64Jpeg: String, prompt: String): String {
+        return try {
+            when (activeProvider) {
+                "anthropic" -> visionCallAnthropic(base64Jpeg, prompt)
+                "openai"    -> visionCallOpenAI(base64Jpeg, prompt, "https://api.openai.com/v1/chat/completions")
+                "grok"      -> visionCallOpenAI(base64Jpeg, prompt, "https://api.x.ai/v1/chat/completions")
+                "ollama"    -> visionCallOllama(base64Jpeg, prompt)
+                else        -> "Vision not supported for provider: $activeProvider"
+            }
+        } catch (e: Exception) {
+            "Vision analysis failed: ${e.message}"
+        }
+    }
+
+    private fun visionCallAnthropic(base64Jpeg: String, prompt: String): String {
+        val key = apiKey("anthropic").ifBlank { return "Anthropic API key not set" }
+        val body = gson.toJson(mapOf(
+            "model"      to activeModel,
+            "max_tokens" to 1024,
+            "messages"   to listOf(mapOf(
+                "role"    to "user",
+                "content" to listOf(
+                    mapOf("type" to "image", "source" to mapOf(
+                        "type"       to "base64",
+                        "media_type" to "image/jpeg",
+                        "data"       to base64Jpeg
+                    )),
+                    mapOf("type" to "text", "text" to prompt)
+                )
+            ))
+        ))
+        return httpPost("https://api.anthropic.com/v1/messages",
+            mapOf("x-api-key" to key, "anthropic-version" to "2023-06-01",
+                  "content-type" to "application/json"),
+            body) { resp ->
+            @Suppress("UNCHECKED_CAST")
+            val content = (gson.fromJson(resp, Map::class.java)["content"] as? List<*>)
+            (content?.firstOrNull() as? Map<*, *>)?.get("text") as? String ?: resp
+        }
+    }
+
+    private fun visionCallOpenAI(base64Jpeg: String, prompt: String, endpoint: String): String {
+        val provider = if (endpoint.contains("groq")) "groq" else "openai"
+        val key = apiKey(provider).ifBlank { return "$provider API key not set" }
+        val body = gson.toJson(mapOf(
+            "model"      to activeModel,
+            "max_tokens" to 1024,
+            "messages"   to listOf(mapOf(
+                "role"    to "user",
+                "content" to listOf(
+                    mapOf("type" to "image_url", "image_url" to mapOf(
+                        "url" to "data:image/jpeg;base64,$base64Jpeg"
+                    )),
+                    mapOf("type" to "text", "text" to prompt)
+                )
+            ))
+        ))
+        return httpPost(endpoint,
+            mapOf("Authorization" to "Bearer $key", "Content-Type" to "application/json"),
+            body) { resp ->
+            @Suppress("UNCHECKED_CAST")
+            val choices = (gson.fromJson(resp, Map::class.java)["choices"] as? List<*>)
+            val msg = (choices?.firstOrNull() as? Map<*, *>)?.get("message") as? Map<*, *>
+            msg?.get("content") as? String ?: resp
+        }
+    }
+
+    private fun visionCallOllama(base64Jpeg: String, prompt: String): String {
+        val url  = "${ollamaUrl.trimEnd('/')}/api/generate"
+        val body = gson.toJson(mapOf(
+            "model"  to activeModel,
+            "prompt" to prompt,
+            "images" to listOf(base64Jpeg),
+            "stream" to false
+        ))
+        return httpPost(url, mapOf("Content-Type" to "application/json"), body) { resp ->
+            @Suppress("UNCHECKED_CAST")
+            (gson.fromJson(resp, Map::class.java)["response"] as? String) ?: resp
+        }
+    }
+
+    /** Generic HTTP POST helper — [parse] receives the raw response body. */
+    private fun <T> httpPost(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        parse: (String) -> T
+    ): T {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 15_000
+        conn.readTimeout    = 60_000
+        conn.doOutput = true
+        headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+        conn.outputStream.use { it.write(body.toByteArray()) }
+        val resp = conn.inputStream.bufferedReader().readText()
+        return parse(resp)
+    }
+
+    private fun toolGetScreenText(): String {
+        if (!VoiceOSAccessibilityService.isAvailable()) {
+            return "Accessibility service not enabled. Ask the user to go to Settings › Accessibility › VoiceOS and enable it."
+        }
+        val text = VoiceOSAccessibilityService.getScreenText()
+        return if (text.isBlank()) "Screen appears empty or content is not accessible as text. Try take_screenshot instead."
+               else "Screen content:\n$text"
+    }
+
+    private fun toolTapScreen(args: Map<String, Any>): String {
+        if (!VoiceOSAccessibilityService.isAvailable()) return "Accessibility service not enabled"
+        val x = (args["x"] as? Double)?.toFloat() ?: return "Missing x coordinate"
+        val y = (args["y"] as? Double)?.toFloat() ?: return "Missing y coordinate"
+        val ok = VoiceOSAccessibilityService.tap(x, y)
+        return if (ok) "Tapped (${x.toInt()}, ${y.toInt()})" else "Tap failed — gesture was cancelled"
+    }
+
+    private fun toolSwipeScreen(args: Map<String, Any>): String {
+        if (!VoiceOSAccessibilityService.isAvailable()) return "Accessibility service not enabled"
+        val x1 = (args["x1"] as? Double)?.toFloat() ?: return "Missing x1"
+        val y1 = (args["y1"] as? Double)?.toFloat() ?: return "Missing y1"
+        val x2 = (args["x2"] as? Double)?.toFloat() ?: return "Missing x2"
+        val y2 = (args["y2"] as? Double)?.toFloat() ?: return "Missing y2"
+        val dur = (args["duration_ms"] as? Double)?.toLong() ?: 300L
+        val ok  = VoiceOSAccessibilityService.swipe(x1, y1, x2, y2, dur)
+        return if (ok) "Swiped (${x1.toInt()},${y1.toInt()}) → (${x2.toInt()},${y2.toInt()})"
+               else "Swipe failed"
+    }
+
     // ════════════════════════════════════════════════════════════════
 
     private fun toolContextSearch(args: Map<String, Any>): String {
@@ -2372,14 +4178,28 @@ Always combine social context with communication tools (send_sms, call_contact) 
         val profile = if (profileCtx.isNotBlank()) "\n\n$profileCtx" else ""
         val ctx   = if (liveCtx.isNotBlank()) "\n\n$liveCtx" else ""
         val skill = if (!skillSuffix.isNullOrBlank()) "\n\n$skillSuffix" else ""
-        return """You are VoiceOS — an intelligent personal assistant running as the Android launcher on the user's phone.
-You have direct access to the device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, and the web.
-You also have a local context index (context_search, get_pending_attention, get_message_threads, get_discovery_status, discover_now). Use these FIRST when the user asks about people, messages, or upcoming items — they are fast and avoid redundant device queries.
-You have a social relationship layer: get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, suggest_social_outreach.
-If Termux is installed, use run_shell to execute shell commands, check git repos, run scripts, and inspect files. Read-only commands run immediately; mutations are queued for approval. Use get_bridge_setup if setup is needed.
-Be concise and action-oriented. ALWAYS use tools to answer questions about device state.
-For outgoing actions: draft_email / send_sms / send_whatsapp queue the action for user approval — never open apps directly for these.
-call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
+        return """You are VoiceOS, a personal AI assistant on the user's Android phone.
+
+## Response style
+- Match response length to request complexity. Greetings → 1 sentence. Simple questions → 1-3 sentences. Complex tasks → structured with headers/bullets.
+- Use markdown: **bold** for key info, bullet lists for multiple items, ## headers to separate sections.
+- Never narrate or repeat the device snapshot. It is silent context for you — the user cannot see it and does not want it read back.
+- Never open with "I'm VoiceOS" or self-introductions after the first message. Never end with "How can I help?" unless nothing was asked.
+- When you take an action, say what you did in one line. Don't explain how you did it.
+
+## Capabilities
+- Device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, screen automation.
+- Context index: use context_search / get_pending_attention / get_message_threads FIRST for questions about people, messages, or upcoming events.
+- Social layer: get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, suggest_social_outreach.
+- Shell (if Termux): run_shell for git, scripts, files. Read-only runs immediately; mutations queue for approval.
+- Screen: get_screen_text (fast) or take_screenshot (vision + coordinates) → tap_screen / swipe_screen.
+
+## Rules
+- Use add_task (never remember) for to-do items.
+- draft_email / send_sms / send_whatsapp always queue for approval.
+- call_contact and navigate open the app directly.
+- **Tasks are completely independent items.** Never infer that tasks are related or sequential just because they appear in the same list. Never combine the context of separate tasks. Never act on multiple tasks in a single turn unless the user explicitly asks you to work on multiple tasks. One task about texting someone is not connected to another task about a payment or a purchase.
+- **Never act on a task autonomously.** Only advance a task when the user explicitly asks "work on this task" or "do [task title]". Listing tasks does not mean the user wants them executed.$profile$ctx$skill"""
     }
 
     private fun buildLiveContext(minimal: Boolean = false): String {
@@ -2466,6 +4286,10 @@ call_contact and navigate open the relevant app directly.$profile$ctx$skill"""
                     sb.appendLine("  Context index: empty — use discover_now to index device data")
                 }
             } catch (_: Exception) {}
+
+            // Accessibility service availability
+            val a11yReady = VoiceOSAccessibilityService.isAvailable()
+            sb.appendLine("  Screen automation: ${if (a11yReady) "ready (take_screenshot, tap_screen, get_screen_text available)" else "not enabled — user must enable VoiceOS in Settings › Accessibility"}")
         }
         sb.append("╚════════════════════════════════════════════════════════╝")
         return sb.toString()

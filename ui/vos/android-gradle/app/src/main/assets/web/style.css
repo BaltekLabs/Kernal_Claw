@@ -420,8 +420,8 @@ html, body {
 /* ── Response: full-screen floating text ───────────────────────── */
 #response-panel {
   position: fixed;
-  left: 7vw;
-  right: 7vw;
+  left: calc(5vw + env(safe-area-inset-left, 0px));
+  right: calc(5vw + env(safe-area-inset-right, 0px));
   top: calc(var(--safe-top) + 52px);
   bottom: calc(var(--safe-bottom) + 52px);
   overflow: hidden;
@@ -450,10 +450,13 @@ html, body {
 
 #response-scroll {
   flex: 1;
+  width: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+  min-width: 0;
   /* fade bottom of text area into action bar */
   -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
   mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
@@ -461,14 +464,61 @@ html, body {
 #response-scroll::-webkit-scrollbar { display: none; }
 
 #response-text {
-  font-size: 19px;
-  font-weight: 500;
-  line-height: 1.8;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.65;
   color: var(--text-mid);
-  text-align: center;
-  white-space: pre-wrap;
+  text-align: left;
+  white-space: normal;
   word-break: break-word;
-  padding: 16px 0 40px;
+  overflow-wrap: anywhere;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px 20px 40px 4px;
+}
+
+/* ── Markdown styles ──────────────────────────────────────────── */
+#response-text * { max-width: 100%; box-sizing: border-box; }
+#response-text .md-p  { margin: 0 0 10px; word-break: break-word; overflow-wrap: anywhere; }
+#response-text .md-h1 { font-size: 18px; font-weight: 700; color: var(--text); margin: 14px 0 6px; letter-spacing: -0.01em; }
+#response-text .md-h2 { font-size: 15px; font-weight: 600; color: var(--text); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.7; }
+#response-text .md-h3 { font-size: 14px; font-weight: 600; color: var(--accent); margin: 10px 0 4px; }
+#response-text strong  { color: var(--text); font-weight: 600; }
+#response-text em      { color: rgba(255,255,255,0.65); font-style: italic; }
+#response-text .md-ul,
+#response-text .md-ol  { margin: 4px 0 10px 0; padding-left: 18px; }
+#response-text .md-ul li,
+#response-text .md-ol li { margin-bottom: 5px; color: var(--text-mid); }
+#response-text .md-ul li::marker { color: var(--accent); }
+#response-text .md-code {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  color: rgba(0,220,255,0.85);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  display: block;
+}
+#response-text .md-inline {
+  background: rgba(255,255,255,0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  color: rgba(0,220,255,0.85);
+}
+#response-text .md-hr {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  margin: 12px 0;
 }
 
 /* ── Response follow-up action bar ────────────────────────────── */
@@ -1103,20 +1153,20 @@ html, body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 18px;
+  padding: 14px 18px;
+  min-height: 52px;
   cursor: pointer;
   border-bottom: 1px solid rgba(255,255,255,0.04);
   opacity: 0;
   transform: translateY(12px);
   transition: opacity 0.28s ease, transform 0.28s ease, background 0.15s;
+  touch-action: manipulation;
 }
 .tov-item.in {
   opacity: 1;
   transform: none;
 }
 .tov-item:active { background: rgba(255,255,255,0.04); }
-.tov-item.done   { opacity: 0.38; }
-.tov-item.done .tov-title { text-decoration: line-through; }
 
 /* Priority dot */
 .tov-dot {
@@ -1164,22 +1214,41 @@ html, body {
 .tov-advance {
   font-size: 10px;
   color: rgba(0,180,255,0.6);
-  /* Visual size stays compact, touch target is enlarged via padding */
-  padding: 10px 14px;
-  margin: -10px -6px -10px 0;   /* negative margin eats into row padding, not layout */
+  /* Generous touch target — min 44×44px per accessibility guidelines */
+  padding: 14px 16px;
   border: 1px solid rgba(0,180,255,0.22);
   border-radius: 10px;
   flex-shrink: 0;
   background: none;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  display: none;
-  min-width: 64px;
+  display: block;
+  min-width: 72px;
+  min-height: 44px;
   text-align: center;
   line-height: 1;
+  touch-action: manipulation;
 }
-.tov-item:not(.done) .tov-advance { display: block; }
 .tov-advance:active { background: rgba(0,180,255,0.12); }
+
+/* Clear-all row */
+.tov-clear-row {
+  padding: 6px 14px 2px;
+  display: flex;
+  justify-content: flex-end;
+}
+.tov-clear-btn {
+  font-size: 10px;
+  color: rgba(255,255,255,0.3);
+  background: none;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  letter-spacing: 0.03em;
+}
+.tov-clear-btn:active { background: rgba(255,60,60,0.12); color: rgba(255,100,100,0.8); }
 
 /* Footer hint */
 #task-overlay-footer {
@@ -1552,17 +1621,17 @@ html, body {
 /* ── People / Social CRM panel ────────────────────────────────── */
 #people-panel {
   position: fixed;
-  top: 0; bottom: 0; left: 0;
+  top: 0; bottom: 0; right: 0;
   width: min(360px, 94vw);
   background: rgba(8, 12, 24, 0.96);
-  border-right: 1px solid var(--glass-border);
+  border-left: 1px solid var(--glass-border);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   display: flex;
   flex-direction: column;
   padding-top: calc(var(--safe-top) + 0px);
   padding-bottom: calc(var(--safe-bottom) + 0px);
-  transform: translateX(-100%);
+  transform: translateX(100%);
   transition: transform 0.32s cubic-bezier(0.4,0,0.2,1);
   z-index: 60;
   overflow: hidden;
@@ -1678,6 +1747,13 @@ html, body {
   color: var(--accent);
 }
 .pf-chip:active { opacity: 0.7; }
+/* Follow-up filter chip — amber accent */
+.pf-chip-followup { border-color: rgba(255,180,0,0.3); color: rgba(255,200,80,0.7); }
+.pf-chip-followup.active {
+  background: rgba(255,160,0,0.16);
+  border-color: rgba(255,180,0,0.5);
+  color: #ffc940;
+}
 
 /* Contact list */
 #people-list {
@@ -1722,6 +1798,29 @@ html, body {
   font-size: 15px; font-weight: 700;
   flex-shrink: 0;
   color: #fff;
+  position: relative;
+}
+/* Amber dot on avatar when follow-up is flagged */
+.person-followup-dot {
+  position: absolute;
+  top: -2px; right: -2px;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: #ffc940;
+  border: 2px solid #111;
+  box-shadow: 0 0 5px rgba(255,180,0,0.6);
+}
+/* Inline badge in card row2 */
+.person-extra-tag.followup-badge {
+  background: rgba(255,160,0,0.15);
+  border: 1px solid rgba(255,180,0,0.35);
+  color: #ffc940;
+}
+/* Follow-up quick-action button active state */
+.pqa-btn.followup-active {
+  background: rgba(255,160,0,0.15);
+  border-color: rgba(255,180,0,0.4);
+  color: #ffc940;
 }
 .person-card-info { flex: 1; min-width: 0; }
 .person-card-row1 {
@@ -1853,6 +1952,76 @@ html, body {
 }
 .ptp-btn.active { border-color: rgba(0,150,255,0.5); background: rgba(0,150,255,0.15); color: var(--accent); }
 .ptp-btn:active { opacity: 0.7; }
+
+/* Frequency picker — reuses ptp-btn shape */
+.person-freq-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.pfq-btn {
+  font-size: 11px;
+  padding: 4px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-dim);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.pfq-btn.active { border-color: rgba(0,200,120,0.5); background: rgba(0,200,120,0.12); color: #4ee; }
+.pfq-btn:active { opacity: 0.7; }
+
+/* Sentiment picker */
+.person-sentiment-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.psnt-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-dim);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.psnt-btn.active { border-color: rgba(255,180,0,0.5); background: rgba(255,180,0,0.12); color: #ffd060; }
+.psnt-btn:active { opacity: 0.7; }
+
+/* Birthday input */
+.person-birthday-input {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  max-width: 120px;
+}
+.person-birthday-input:focus { border-color: var(--accent); }
+.person-detail-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-dim); opacity: 0.7; }
+
+/* Frequency health badges */
+.person-extra-tag.freq-ok      { background: rgba(0,200,120,0.12); border-color: rgba(0,200,120,0.35); color: #4ee; }
+.person-extra-tag.freq-overdue { background: rgba(255,80,0,0.13);  border-color: rgba(255,80,0,0.4);   color: #f96; }
+
+/* People panel header review button */
+#people-review-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,180,255,0.3);
+  background: rgba(0,180,255,0.1);
+  color: var(--accent);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#people-review-btn:active { opacity: 0.7; }
 
 /* Tags input */
 .person-tags-row {
