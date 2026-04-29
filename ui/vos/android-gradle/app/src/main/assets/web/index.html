@@ -31,7 +31,12 @@
   </div>
 
   <!-- Swipe hint -->
-  <div id="hint">tap to chat · swipe up for apps · swipe down for settings</div>
+  <div id="hint">swipe up for apps · swipe right for menu · swipe left for people</div>
+
+  <!-- Bottom-half message display (feedback / heartbeat notices) -->
+  <div id="msg-display" aria-live="polite">
+    <div id="msg-display-text"></div>
+  </div>
 
   <!-- Skill indicator (shown briefly when skill routing activates) -->
   <div id="skill-indicator"></div>
@@ -86,11 +91,11 @@
   <!-- ── Suggestions: app/contact quick-launch ───────────────── -->
   <div id="suggestions"></div>
 
-  <!-- ── Mic toggle (shown in keyboard mode) ────────────────── -->
-  <button id="mic-btn-small" aria-label="Switch to voice">🎤</button>
+  <!-- ── Speak pill — always-visible bottom-left rectangle ──── -->
+  <button id="mic-btn-small" aria-label="Speak">🎤 Speak</button>
 
-  <!-- ── Send button (shown while typing) ────────────────────── -->
-  <button id="send-btn" aria-label="Send">&#9658;</button>
+  <!-- ── Tasks/Send pill — always-visible bottom-right rectangle -->
+  <button id="send-btn" aria-label="Tasks">☰ Tasks</button>
 
   <!-- ── Hidden input panel — keyboard capture only ──────────── -->
   <div id="input-panel" aria-label="Message input">
@@ -105,75 +110,8 @@
     ></textarea>
   </div>
 
-  <!-- ── Settings panel (swipe down) ───────────────────────── -->
-  <div id="settings-panel" role="dialog" aria-label="Settings">
-    <h2>PROVIDER</h2>
-    <div class="provider-grid">
-      <button class="provider-btn" data-provider="ollama" data-model="mistral:latest">
-        Ollama
-        <small>local · mistral</small>
-      </button>
-      <button class="provider-btn" data-provider="anthropic" data-model="claude-sonnet-4-6">
-        Claude
-        <small>Sonnet 4.6</small>
-      </button>
-      <button class="provider-btn" data-provider="openai" data-model="gpt-4o-mini">
-        OpenAI
-        <small>GPT-4o mini</small>
-      </button>
-      <button class="provider-btn" data-provider="groq" data-model="llama-3.3-70b-versatile">
-        Groq
-        <small>Llama 3.3 70B</small>
-      </button>
-    </div>
-    <button id="clear-btn">Clear conversation</button>
-    <div id="notif-settings-row">
-      <button id="notif-settings-btn" class="notif-settings-btn">Notification access</button>
-      <span id="notif-settings-status"></span>
-    </div>
-
-    <!-- Ollama controls (shown when ollama selected) -->
-    <div id="ollama-model-row" style="display:none;">
-      <input
-        id="ollama-model-input"
-        type="text"
-        placeholder="Model name, e.g. phi3:mini"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      >
-      <button id="save-model-btn">Set</button>
-    </div>
-    <div id="ollama-url-row" style="display:none;">
-      <input
-        id="ollama-url-input"
-        type="url"
-        placeholder="http://127.0.0.1:11434"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      >
-      <button id="test-ollama-btn">Test</button>
-    </div>
-    <div id="ollama-status"></div>
-
-    <!-- API key (shown for cloud providers) -->
-    <div id="api-key-row" style="display:none;">
-      <input
-        id="api-key-input"
-        type="password"
-        placeholder="Paste API key…"
-        autocomplete="off"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      >
-      <button id="save-key-btn">Save</button>
-    </div>
-    <div id="key-status"></div>
-  </div>
+  <!-- settings-panel kept as invisible stub so JS refs don't break -->
+  <div id="settings-panel" style="display:none;" aria-hidden="true"></div>
 
   <!-- ── App drawer (swipe up twice / long swipe up) ─────────── -->
   <div id="app-drawer" role="dialog" aria-label="App drawer">
@@ -190,10 +128,63 @@
     <div id="app-grid" role="list"></div>
   </div>
 
-  <!-- ── Conversation history (swipe right) ─────────────────── -->
-  <div id="history-panel" role="dialog" aria-label="Conversation history">
-    <h2>HISTORY</h2>
-    <div id="history-list"></div>
+  <!-- ── Left panel: history (top) + settings (bottom) ──────── -->
+  <div id="history-panel" role="dialog" aria-label="Menu">
+
+    <!-- History section -->
+    <div id="history-section">
+      <h2>HISTORY</h2>
+      <div id="history-list"></div>
+    </div>
+
+    <!-- Settings section -->
+    <div id="side-settings">
+      <h2>PROVIDER</h2>
+      <div class="provider-grid">
+        <button class="provider-btn" data-provider="ollama" data-model="mistral:latest">
+          Ollama<small>local · mistral</small>
+        </button>
+        <button class="provider-btn" data-provider="anthropic" data-model="claude-sonnet-4-6">
+          Claude<small>Sonnet 4.6</small>
+        </button>
+        <button class="provider-btn" data-provider="openai" data-model="gpt-4o-mini">
+          OpenAI<small>GPT-4o mini</small>
+        </button>
+        <button class="provider-btn" data-provider="groq" data-model="llama-3.3-70b-versatile">
+          Groq<small>Llama 3.3 70B</small>
+        </button>
+      </div>
+      <h2>TERMUX</h2>
+      <div id="bridge-row">
+        <span id="bridge-status">checking…</span>
+        <button id="bridge-setup-btn">Setup</button>
+      </div>
+      <div id="bridge-instructions" style="display:none"></div>
+
+      <button id="clear-btn">Clear conversation</button>
+      <div id="notif-settings-row">
+        <button id="notif-settings-btn" class="notif-settings-btn">Notification access</button>
+        <span id="notif-settings-status"></span>
+      </div>
+      <div id="ollama-model-row" style="display:none;">
+        <input id="ollama-model-input" type="text" placeholder="Model name, e.g. phi3:mini"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="save-model-btn">Set</button>
+      </div>
+      <div id="ollama-url-row" style="display:none;">
+        <input id="ollama-url-input" type="url" placeholder="http://127.0.0.1:11434"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="test-ollama-btn">Test</button>
+      </div>
+      <div id="ollama-status"></div>
+      <div id="api-key-row" style="display:none;">
+        <input id="api-key-input" type="password" placeholder="Paste API key…"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="save-key-btn">Save</button>
+      </div>
+      <div id="key-status"></div>
+    </div>
+
   </div>
 
   <!-- ── Task overlay (rolls up from bottom-right) ──────────── -->
@@ -230,7 +221,68 @@
     <button id="notif-access-btn">Enable notification access</button>
   </div>
 
-  <!-- Tool confirmation dialog -->
+  <!-- ── People / Social CRM panel (swipe left from home) ─────── -->
+  <div id="people-panel" role="dialog" aria-label="People">
+
+    <div id="people-header">
+      <span id="people-title">People</span>
+      <div id="people-header-actions">
+        <button id="people-import-btn" aria-label="Import contacts">Import</button>
+        <button id="people-close" aria-label="Close">✕</button>
+      </div>
+    </div>
+
+    <div id="people-stats">
+      <span id="people-stat-total"></span>
+      <span id="people-stat-attention"></span>
+    </div>
+
+    <div id="people-search-row">
+      <input id="people-search" type="search" placeholder="Search…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+
+    <div id="people-filter-chips">
+      <button class="pf-chip active" data-type="all">All</button>
+      <button class="pf-chip" data-type="friend">Friend</button>
+      <button class="pf-chip" data-type="family">Family</button>
+      <button class="pf-chip" data-type="work">Work</button>
+      <button class="pf-chip" data-type="mentor">Mentor</button>
+      <button class="pf-chip" data-type="other">Other</button>
+    </div>
+
+    <div id="people-list"></div>
+
+    <div id="people-empty" style="display:none">
+      <div id="people-empty-icon">🤝</div>
+      <p>No contacts tracked yet.</p>
+      <p>Tap <strong>Import</strong> to seed from your contacts,<br>or ask the agent about someone.</p>
+    </div>
+
+  </div>
+
+  <!-- ── Agent onboarding overlay ──────────────────────────────── -->
+  <div id="onboard-overlay" role="dialog" aria-label="Agent setup" style="display:none">
+    <div id="onboard-header">
+      <span id="onboard-title">Agent Setup</span>
+      <button id="onboard-skip" aria-label="Skip setup">Skip</button>
+    </div>
+    <div id="onboard-progress">
+      <span class="ob-step" data-step="name">Name</span>
+      <span class="ob-step" data-step="projects">Projects</span>
+      <span class="ob-step" data-step="social">Social</span>
+      <span class="ob-step" data-step="schedule">Schedule</span>
+    </div>
+    <div id="onboard-messages"></div>
+    <div id="onboard-input-row">
+      <button id="onboard-mic-btn" aria-label="Speak answer">🎤</button>
+      <input id="onboard-text-input" type="text"
+        placeholder="Type your answer…"
+        autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false">
+      <button id="onboard-send-btn" aria-label="Send">▶</button>
+    </div>
+  </div>
+
+  <!-- ── Tool confirmation dialog -->
   <div id="confirm-dialog" role="dialog" aria-label="Confirm action">
     <p id="confirm-message"></p>
     <div id="confirm-buttons">

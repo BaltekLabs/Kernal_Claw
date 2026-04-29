@@ -26,7 +26,10 @@ data class AgentResult(
     val text: String,
     val rawContent: Any = text,
     val toolCalls: List<ToolCall>,
-    val done: Boolean
+    val done: Boolean,
+    /** True when the provider already streamed tokens directly to the frontend writer.
+     *  AgentEngine skips re-writing result.text to avoid duplicating output. */
+    val alreadyStreamed: Boolean = false
 )
 
 // ── Skill definitions (port of engine.py SkillDef) ────────────────────
@@ -186,7 +189,8 @@ class AgentEngine(
         for (step in 0 until MAX_STEPS) {
             val result = callLLM(messages, toolDefs, sysPrompt)
 
-            if (result.text.isNotBlank()) {
+            // Only write if the provider hasn't already streamed tokens directly
+            if (result.text.isNotBlank() && !result.alreadyStreamed) {
                 writer.write(result.text)
                 writer.flush()
             }

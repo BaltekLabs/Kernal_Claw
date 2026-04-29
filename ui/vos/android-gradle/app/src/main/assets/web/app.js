@@ -3,7 +3,7 @@
  *
  * Gestures:
  *   Tap / swipe up        → open text input
- *   Swipe down            → toggle settings panel
+ *   Swipe down            → close active panel
  *   Swipe left            → dismiss
  *   Swipe right           → conversation history
  *
@@ -29,6 +29,9 @@ const responseActions      = document.getElementById('response-actions');
 const followupVoiceBtn     = document.getElementById('followup-voice-btn');
 const followupTypeBtn      = document.getElementById('followup-type-btn');
 const followupClearBtn     = document.getElementById('followup-clear-btn');
+
+const msgDisplay      = document.getElementById('msg-display');
+const msgDisplayText  = document.getElementById('msg-display-text');
 
 const skillIndicator  = document.getElementById('skill-indicator');
 const queueBadge      = document.getElementById('queue-badge');
@@ -230,6 +233,10 @@ function showToolBadge(toolName) {
     create_event: '📅', set_alarm: '⏰', get_battery: '🔋',
     get_volume: '🔊', set_volume: '🔊', remember: '💾', recall: '💾',
     call_contact: '📞', send_sms: '💬', navigate: '🗺️',
+    get_contact_profile: '🤝', add_relationship_note: '📝',
+    log_interaction: '✅', get_relationship_health: '💚',
+    suggest_social_outreach: '💌',
+    run_shell: '⌨️', get_bridge_setup: '🔧',
   };
   badge.textContent = `${icons[toolName] || '⚙️'} ${toolName.replace(/_/g, ' ')}`;
   responseScroll.insertBefore(badge, responseText);
@@ -341,19 +348,18 @@ async function executeCommand(cmd) {
   }
 }
 
+let msgDisplayTimer = null;
+function showMsgDisplay(text, durationMs = 5000) {
+  msgDisplayText.textContent = text;
+  msgDisplay.classList.add('visible');
+  clearTimeout(msgDisplayTimer);
+  msgDisplayTimer = setTimeout(() => msgDisplay.classList.remove('visible'), durationMs);
+}
+
 function showFeedback(msg) {
-  responseText.textContent = msg;
-  currentResponse = msg;
-  responsePanel.classList.add('visible');
-  activePanel = 'response';
+  showMsgDisplay(msg, 7000);
   setCircleState(CircleState.RESPONDING);
-  hintEl.style.opacity = '0';
-  setTimeout(() => {
-    if (!isProcessing) {
-      setCircleState(CircleState.IDLE);
-      hintEl.style.opacity = '1';
-    }
-  }, 3000);
+  setTimeout(() => { if (!isProcessing) setCircleState(CircleState.IDLE); }, 5000);
 }
 
 function findApp(query) {
@@ -370,9 +376,9 @@ async function fetchContacts(name) {
   } catch { return []; }
 }
 
-async function post(url, body) {
+async function post(url, body, method = 'POST') {
   return fetch(url, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(r => r.json()).catch(() => ({}));
@@ -517,6 +523,11 @@ function updateStatusBar(data) {
 function setCircleState(state) { circle.setState(state); }
 
 // ── Panel management ─────────────────────────────────────────────
+const peoplePanel  = document.getElementById('people-panel');
+const peopleClose  = document.getElementById('people-close');
+const peopleList   = document.getElementById('people-list');
+const peopleEmpty  = document.getElementById('people-empty');
+
 const PANELS = {
   input:    inputPanel,
   response: responsePanel,
@@ -524,6 +535,7 @@ const PANELS = {
   drawer:   appDrawer,
   history:  historyPanel,
   queue:    queuePanel,
+  people:   peoplePanel,
 };
 
 function showPanel(name) {
@@ -533,11 +545,13 @@ function showPanel(name) {
   activePanel = name;
   if (name === 'input') {
     inputDisplay.classList.add('visible');
-    sendBtn.classList.add('visible');
     refreshInputDisplay();
     setCircleState(CircleState.LISTENING);
     // Default to voice mode; keyboard is opt-in
     showInputVoiceMode();
+  } else {
+    // Dismiss keyboard whenever any non-input panel opens
+    chatInput.blur();
   }
   if (name === 'drawer') loadApps();
   if (name !== 'input') hideSuggestions();
@@ -548,12 +562,11 @@ function closePanel(name, resetActive = true) {
   if (name === 'input') {
     inputDisplay.classList.remove('visible');
     inputDisplay.classList.remove('voice-mode');
-    sendBtn.classList.remove('visible');
-    micBtnSmall.classList.remove('visible');
     hideSuggestions();
     stopVoice();
     chatInput.blur();
     inputMode = 'idle';
+    updateBottomBar();
   }
   if (resetActive) {
     activePanel = null;
@@ -562,7 +575,7 @@ function closePanel(name, resetActive = true) {
 }
 
 function closeAllPanels() {
-  ['input', 'settings', 'drawer', 'history', 'queue'].forEach(k => closePanel(k, false));
+  ['input', 'settings', 'drawer', 'history', 'queue', 'people'].forEach(k => closePanel(k, false));
   hideSuggestions();
   activePanel = currentResponse ? 'response' : null;
   if (!isProcessing) setCircleState(CircleState.IDLE);
@@ -631,6 +644,339 @@ function renderHistory() {
     historyList.appendChild(el);
   });
 }
+
+// ── People / Social CRM panel ────────────────────────────────────
+
+const peopleImportBtn   = document.getElementById('people-import-btn');
+const peopleStatTotal   = document.getElementById('people-stat-total');
+const peopleStatAttn    = document.getElementById('people-stat-attention');
+const peopleSearch      = document.getElementById('people-search');
+const peopleFilterChips = document.querySelectorAll('.pf-chip');
+
+let crmActiveType  = 'all';
+let crmAllContacts = [];    // full list from last load
+let expandedCard   = null;  // DOM element of currently expanded card
+let crmLoaded      = false; // true after first successful load; false again after import
+
+// Avatar colour palette
+const AVATAR_COLORS = [
+  '#2a6fdb','#c4413c','#27843f','#925abc','#b86e00',
+  '#1a8a8a','#c44c7e','#5d6cc0','#4a7c59','#7c5d4a'
+];
+function avatarColor(name) {
+  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+function avatarInitials(name) {
+  const parts = name.trim().split(/\s+/);
+  return parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.slice(0, 2).toUpperCase();
+}
+
+function daysBadge(days) {
+  if (days < 0)  return { cls: 'none',  label: 'no history' };
+  if (days === 0) return { cls: 'fresh', label: 'today' };
+  if (days <= 10) return { cls: 'fresh', label: `${days}d ago` };
+  if (days <= 30) return { cls: 'warm',  label: `${days}d ago` };
+  return               { cls: 'cold',  label: `${days}d ago` };
+}
+
+async function openPeoplePanel() {
+  showPanel('people');
+  if (crmLoaded) return;                  // already populated — panel shows instantly
+  if (crmAllContacts.length > 0) {        // stale cache: render immediately, refresh in bg
+    peopleList.innerHTML = '';
+    crmAllContacts.forEach(c => peopleList.appendChild(buildPersonCard(c)));
+    loadPeoplePanel();                    // non-awaited background refresh
+  } else {
+    await loadPeoplePanel();              // true first load — wait for it
+  }
+}
+
+async function loadPeoplePanel() {
+  // Don't clear the list until data arrives — keeps existing cards visible during refresh
+  expandedCard = null;
+  peopleEmpty.style.display = 'none';
+
+  let data = null;
+  try {
+    const params = new URLSearchParams({ type: crmActiveType });
+    const q = peopleSearch.value.trim();
+    if (q) params.set('q', q);
+    data = await fetch('/api/crm/contacts?' + params).then(r => r.json());
+  } catch (e) {
+    console.error('CRM load failed', e);
+    return;
+  }
+
+  // Clear and repopulate only once data is ready
+  peopleList.innerHTML = '';
+  const contacts = data?.contacts ?? [];
+  crmAllContacts = contacts;
+
+  peopleStatTotal.textContent = `${data?.total ?? 0} contacts`;
+  const attn = data?.needsAttention ?? 0;
+  peopleStatAttn.textContent = attn > 0 ? `· ${attn} need attention` : '';
+
+  crmLoaded = true;
+
+  if (contacts.length === 0) {
+    peopleEmpty.style.display = '';
+    return;
+  }
+  contacts.forEach(c => peopleList.appendChild(buildPersonCard(c)));
+}
+
+function buildPersonCard(contact) {
+  const card = document.createElement('div');
+  card.className = 'person-card';
+
+  const { cls: daysCls, label: daysLabel } = daysBadge(contact.daysSince ?? -1);
+  const initials  = avatarInitials(contact.name);
+  const avatarBg  = avatarColor(contact.name);
+  const typeStr   = contact.type || '';
+  const tags      = contact.tags || [];
+  const notes     = contact.notes || [];         // [{ts, text}]
+  const noteCount = notes.length;
+  const lastNote  = notes[noteCount - 1];
+
+  // Build type tag HTML
+  const typeHtml = typeStr
+    ? `<span class="person-type-tag ${typeStr.toLowerCase()}">${escHtml(typeStr)}</span>`
+    : '';
+  // Extra tags (first 2)
+  const extraTagsHtml = tags.slice(0, 2).map(t => `<span class="person-extra-tag">${escHtml(t)}</span>`).join('');
+  // Phone small
+  const phoneHtml = contact.phone
+    ? `<span class="person-phone-small">${escHtml(contact.phone)}</span>`
+    : '';
+
+  card.innerHTML = `
+    <div class="person-card-top">
+      <div class="person-avatar" style="background:${avatarBg}">${initials}</div>
+      <div class="person-card-info">
+        <div class="person-card-row1">
+          <span class="person-name">${escHtml(contact.name)}</span>
+          <span class="person-days ${daysCls}">${daysLabel}</span>
+        </div>
+        <div class="person-card-row2">
+          ${typeHtml}${extraTagsHtml}
+          ${!typeStr && !tags.length ? phoneHtml : ''}
+          ${noteCount > 0 ? `<span class="person-extra-tag">📝 ${noteCount}</span>` : ''}
+          <span class="person-expand-chevron">▾</span>
+        </div>
+      </div>
+    </div>
+    ${lastNote ? `<div class="person-note-preview">${escHtml(lastNote.text)}</div>` : ''}
+    <div class="person-quick-actions">
+      <button class="pqa-btn" data-qa="call">📞 Call</button>
+      <button class="pqa-btn" data-qa="text">💬 Text</button>
+      <button class="pqa-btn" data-qa="agent">🤖 Agent</button>
+      <button class="pqa-btn danger" data-qa="remove">✕</button>
+    </div>
+    <div class="person-detail">
+      <div class="person-detail-label">Relationship</div>
+      <div class="person-type-picker">
+        ${['friend','family','work','mentor','acquaintance','other'].map(t =>
+          `<button class="ptp-btn${typeStr===t?' active':''}" data-rtype="${t}">${t}</button>`
+        ).join('')}
+      </div>
+
+      <div class="person-detail-label">Tags</div>
+      <div class="person-tags-row" data-tagrow>
+        ${tags.map(t => `
+          <span class="person-tag-pill">
+            ${escHtml(t)}
+            <button class="person-tag-remove" data-removetag="${escHtml(t)}">×</button>
+          </span>`).join('')}
+        <input class="person-tag-input" placeholder="+ add tag" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      </div>
+
+      <div class="person-detail-label">Notes${noteCount > 0 ? ` (${noteCount})` : ''}</div>
+      <div class="person-notes-list">
+        ${notes.length === 0
+          ? '<div style="color:var(--text-dim);font-size:12px;padding:4px 0">No notes yet.</div>'
+          : notes.map(n => `
+            <div class="person-note-entry">
+              ${n.ts ? `<div class="person-note-ts">${escHtml(n.ts)}</div>` : ''}
+              <div class="person-note-text">${escHtml(n.text)}</div>
+            </div>`).join('')
+        }
+      </div>
+      <div class="person-note-add">
+        <textarea class="person-note-textarea" placeholder="Add a note…" rows="2"></textarea>
+        <button class="person-note-save" disabled>Save</button>
+      </div>
+    </div>
+  `;
+
+  // ── Top row tap → expand/collapse
+  card.querySelector('.person-card-top').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (expandedCard && expandedCard !== card) {
+      expandedCard.classList.remove('expanded');
+    }
+    card.classList.toggle('expanded');
+    expandedCard = card.classList.contains('expanded') ? card : null;
+  });
+
+  // ── Quick actions
+  card.querySelector('[data-qa="call"]').addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel('people');
+    if (contact.phone) { post('/api/call', { number: contact.phone }); showFeedback(`Calling ${contact.name}…`); }
+    else sendMessage(`Call ${contact.name}`);
+  });
+  card.querySelector('[data-qa="text"]').addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel('people');
+    if (contact.phone) { post('/api/sms', { number: contact.phone }); }
+    else sendMessage(`Text ${contact.name}`);
+  });
+  card.querySelector('[data-qa="agent"]').addEventListener('click', e => {
+    e.stopPropagation();
+    closePanel('people');
+    sendMessage(`Pull up the full profile for ${contact.name} and help me reach out`);
+  });
+  card.querySelector('[data-qa="remove"]').addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!confirm(`Remove ${contact.name} from People?`)) return;
+    await post('/api/crm/contact/delete', { name: contact.key || contact.name });
+    await loadPeoplePanel();
+  });
+
+  // ── Relationship type picker
+  card.querySelectorAll('.ptp-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const type = btn.dataset.rtype;
+      card.querySelectorAll('.ptp-btn').forEach(b => b.classList.toggle('active', b === btn));
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, type });
+      contact.type = type;
+      // Update badge in top row
+      const row2 = card.querySelector('.person-card-row2');
+      const existing = row2.querySelector('.person-type-tag');
+      if (existing) existing.remove();
+      const newTag = document.createElement('span');
+      newTag.className = `person-type-tag ${type}`;
+      newTag.textContent = type;
+      row2.insertBefore(newTag, row2.firstChild);
+    });
+  });
+
+  // ── Tags
+  const tagRow = card.querySelector('[data-tagrow]');
+  const tagInput = card.querySelector('.person-tag-input');
+  tagInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+  tagInput.addEventListener('keydown', async e => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      const tag = tagInput.value.trim().replace(/,/g,'');
+      if (!tag || tags.includes(tag)) { tagInput.value = ''; return; }
+      tags.push(tag);
+      tagInput.value = '';
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, tags });
+      // Add pill before input
+      const pill = document.createElement('span');
+      pill.className = 'person-tag-pill';
+      pill.innerHTML = `${escHtml(tag)}<button class="person-tag-remove" data-removetag="${escHtml(tag)}">×</button>`;
+      pill.querySelector('.person-tag-remove').addEventListener('click', async ev => {
+        ev.stopPropagation();
+        const idx = tags.indexOf(tag); if (idx >= 0) tags.splice(idx, 1);
+        pill.remove();
+        await post('/api/crm/contact/update', { name: contact.key || contact.name, tags });
+      });
+      tagRow.insertBefore(pill, tagInput);
+    }
+  });
+  // Remove existing tag pills
+  card.querySelectorAll('.person-tag-remove').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const tag = btn.dataset.removetag;
+      const idx = tags.indexOf(tag); if (idx >= 0) tags.splice(idx, 1);
+      btn.closest('.person-tag-pill').remove();
+      await post('/api/crm/contact/update', { name: contact.key || contact.name, tags });
+    });
+  });
+
+  // ── Note textarea enable save
+  const noteTA   = card.querySelector('.person-note-textarea');
+  const noteSave = card.querySelector('.person-note-save');
+  noteTA.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+  noteTA.addEventListener('input', () => {
+    noteSave.disabled = !noteTA.value.trim();
+  });
+  noteSave.addEventListener('click', async e => {
+    e.stopPropagation();
+    const text = noteTA.value.trim();
+    if (!text) return;
+    noteSave.disabled = true;
+    await post('/api/crm/note', { name: contact.key || contact.name, note: text });
+    noteTA.value = '';
+    // Append note to timeline immediately
+    const noteList = card.querySelector('.person-notes-list');
+    const ts = new Date().toLocaleDateString('en-US', { month:'2-digit', day:'2-digit', year:'2-digit' });
+    const entry = document.createElement('div');
+    entry.className = 'person-note-entry';
+    entry.innerHTML = `<div class="person-note-ts">${ts}</div><div class="person-note-text">${escHtml(text)}</div>`;
+    const placeholder = noteList.querySelector('div[style]');
+    if (placeholder) placeholder.remove();
+    noteList.appendChild(entry);
+    noteList.scrollTop = noteList.scrollHeight;
+    // Update preview line
+    const preview = card.querySelector('.person-note-preview');
+    if (preview) preview.textContent = text;
+  });
+
+  return card;
+}
+
+// Filter chip click
+peopleFilterChips.forEach(chip => {
+  chip.addEventListener('click', async () => {
+    crmActiveType = chip.dataset.type;
+    peopleFilterChips.forEach(c => c.classList.toggle('active', c === chip));
+    await loadPeoplePanel();
+  });
+  chip.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+});
+
+// Search debounce
+let searchDebounce = null;
+peopleSearch.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(loadPeoplePanel, 300);
+});
+peopleSearch.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Import button
+peopleImportBtn.addEventListener('click', async () => {
+  peopleImportBtn.classList.add('loading');
+  peopleImportBtn.textContent = 'Importing…';
+  try {
+    const result = await post('/api/crm/import', {});
+    const msg = `Imported ${result.added} contacts (${result.skipped} already tracked)`;
+    showFeedback(msg);
+    crmLoaded = false;
+    await loadPeoplePanel();
+  } catch (e) {
+    showFeedback('Import failed');
+  } finally {
+    peopleImportBtn.classList.remove('loading');
+    peopleImportBtn.textContent = 'Import';
+  }
+});
+peopleImportBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Absorb all touches inside the panel so the gesture engine never sees them.
+// Without this, Android WebView doesn't synthesize click events for div elements
+// when touch-action:none is set on the body.
+peoplePanel.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Close button
+peopleClose.addEventListener('click', () => closePanel('people'));
 
 // ── Settings ─────────────────────────────────────────────────────
 const CLOUD_PROVIDERS = ['anthropic', 'openai', 'groq'];
@@ -736,8 +1082,40 @@ clearBtn.addEventListener('click', async () => {
   closeAllPanels();
 });
 
-// ── Input handling ──────────────────────────────────────────────
-sendBtn.addEventListener('click', () => submitInput());
+// ── Bottom pill bar ──────────────────────────────────────────────
+// Updates Send/Tasks label and tracks keyboard height via visualViewport.
+function updateBottomBar() {
+  const canSend = inputMode === 'keyboard' && chatInput.value.trim().length > 0;
+  sendBtn.textContent = canSend ? '▶ Send' : '☰ Tasks';
+}
+
+// Keyboard-height tracking so pills tuck above the soft keyboard
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    const kb = Math.max(0, window.innerHeight - window.visualViewport.height);
+    document.documentElement.style.setProperty('--keyboard-height', kb + 'px');
+  });
+}
+
+// Speak pill — opens voice input from any state
+micBtnSmall.addEventListener('click', e => {
+  e.stopPropagation();
+  if (activePanel !== 'input') showPanel('input');
+  showInputVoiceMode();
+  setTimeout(() => { if (inputMode === 'voice' && !speechRec) startVoice(); }, 80);
+});
+micBtnSmall.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Tasks/Send pill — context-aware
+sendBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  if (inputMode === 'keyboard' && chatInput.value.trim().length > 0) {
+    submitInput();
+  } else {
+    if (activePanel === 'input') closePanel('input');
+    showTaskOverlay(false);
+  }
+});
 sendBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 
 chatInput.addEventListener('keydown', e => {
@@ -746,6 +1124,7 @@ chatInput.addEventListener('keydown', e => {
 chatInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 chatInput.addEventListener('input', () => {
   refreshInputDisplay();
+  updateBottomBar();
   if (activePanel === 'input') updateSuggestions();
 });
 
@@ -795,7 +1174,7 @@ const SWIPE_MAX_PERP = 80;
 const LONG_PRESS_MS  = 500;
 
 function isScrollableTarget(el) {
-  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, settingsPanel, suggestionsEl];
+  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl, peoplePanel];
   return panels.some(p => p.contains(el));
 }
 
@@ -849,8 +1228,12 @@ function onTap(x, y) {
     setCircleState(CircleState.IDLE); lastTap = 0; return;
   }
   lastTap = now;
-  if (activePanel && activePanel !== 'response') {
+  if (activePanel && activePanel !== 'response' && activePanel !== 'people') {
     closeAllPanels();
+  } else if (activePanel === 'people') {
+    // Taps inside the people panel are absorbed by the panel's own touchstart listener;
+    // this branch only fires if somehow a tap outside the panel reaches onTap while it's open.
+    closePanel('people');
   } else {
     // Open input in voice mode and auto-start voice
     showPanel('input');
@@ -867,14 +1250,15 @@ function onSwipeUp() {
 }
 
 function onSwipeDown() {
-  if (activePanel === 'drawer') { closePanel('drawer'); return; }
   if (activePanel) { closeAllPanels(); return; }
-  showPanel('settings');
+  // No panel open — swipe-down does nothing (settings are in left panel)
 }
 
 function onSwipeLeft()  {
+  if (activePanel === 'people') { closePanel('people'); return; }
   if (activePanel === 'history') { closePanel('history'); return; }
   closeAllPanels();
+  openPeoplePanel();
 }
 
 function onSwipeRight() {
@@ -883,7 +1267,7 @@ function onSwipeRight() {
   showPanel('history');
 }
 
-function onLongPress() { showPanel('settings'); }
+function onLongPress() { showPanel('history'); }
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeAllPanels(); return; }
@@ -996,8 +1380,8 @@ function showInputVoiceMode() {
   inputMode = 'voice';
   inputDisplay.classList.add('voice-mode');
   micBtn.classList.remove('listening');
-  micBtnSmall.classList.remove('visible');
   voiceStatus.textContent = 'tap to speak';
+  updateBottomBar();
 }
 
 function showInputKeyboardMode(focusImmediate = false) {
@@ -1005,7 +1389,7 @@ function showInputKeyboardMode(focusImmediate = false) {
   inputMode = 'keyboard';
   stopVoice();
   inputDisplay.classList.remove('voice-mode');
-  micBtnSmall.classList.add('visible');
+  updateBottomBar();
   // Focus immediately when called from a direct touch/click handler so Android
   // shows the keyboard. The setTimeout fallback handles programmatic calls.
   if (focusImmediate) {
@@ -1108,13 +1492,6 @@ keyboardBtn.addEventListener('click', (e) => {
   showInputKeyboardMode(true);
 });
 
-// Small mic button (shown in keyboard mode) — switch back to voice
-micBtnSmall.addEventListener('click', (e) => {
-  e.stopPropagation();
-  showInputVoiceMode();
-});
-micBtnSmall.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
-
 // ── Response follow-up action buttons ───────────────────────────
 followupVoiceBtn.addEventListener('touchend', (e) => {
   e.preventDefault(); e.stopPropagation();
@@ -1174,8 +1551,8 @@ const taskOverlayClose = document.getElementById('task-overlay-close');
 let taskCache       = [];
 let taskOverlayOpen = false;
 let idleTimer       = null;
-const IDLE_SHOW_MS  = 18_000;    // show tasks after 18s idle
-const OVERLAY_AUTO_HIDE_MS = 9_000;  // auto-hide after 9s
+const IDLE_SHOW_MS  = 60_000;    // show tasks after 60s idle
+const OVERLAY_AUTO_HIDE_MS = 8_000;  // auto-hide after 8s
 let overlayHideTimer = null;
 
 // ── Task data helpers ────────────────────────────────────────────
@@ -1318,7 +1695,7 @@ function resetIdleTimer() {
 }
 
 // Also show on a fixed periodic schedule regardless of idle state
-const TASK_PERIODIC_MS = 120_000;  // every 2 minutes
+const TASK_PERIODIC_MS = 300_000;  // every 5 minutes
 setInterval(() => {
   if (!isProcessing && !activePanel && !taskOverlayOpen) {
     loadTaskCache().then(() => {
@@ -1466,6 +1843,163 @@ setTimeout(() => {
   setInterval(pollNotifications, NOTIF_POLL_MS);
 }, 5_000);
 
+// ── Onboarding overlay ───────────────────────────────────────────
+const onboardOverlay   = document.getElementById('onboard-overlay');
+const onboardSkip      = document.getElementById('onboard-skip');
+const onboardMessages  = document.getElementById('onboard-messages');
+const onboardTextInput = document.getElementById('onboard-text-input');
+const onboardSendBtn   = document.getElementById('onboard-send-btn');
+const onboardMicBtn    = document.getElementById('onboard-mic-btn');
+const onboardSteps     = document.querySelectorAll('.ob-step');
+
+let onboardActive    = false;
+let onboardSpeechRec = null;
+
+async function checkOnboarding() {
+  try {
+    const profile = await fetch('/api/profile').then(r => r.json());
+    if (!profile.onboarding_complete) showOnboarding();
+  } catch { /* endpoint not ready — skip silently */ }
+}
+
+function showOnboarding() {
+  onboardActive = true;
+  onboardMessages.innerHTML = '';
+  onboardOverlay.style.display = '';
+  onboardOverlay.classList.add('visible');
+  // Kick off the opening question from the server
+  setTimeout(() => _sendOnboard(''), 300);
+}
+
+function hideOnboarding() {
+  onboardActive = false;
+  stopOnboardVoice();
+  onboardOverlay.classList.remove('visible');
+  setTimeout(() => { onboardOverlay.style.display = 'none'; }, 400);
+}
+
+function _appendOnboardMsg(role, text) {
+  const el = document.createElement('div');
+  el.className = `ob-msg ${role}`;
+  el.textContent = text;
+  onboardMessages.appendChild(el);
+  onboardMessages.scrollTop = onboardMessages.scrollHeight;
+}
+
+function _setOnboardStep(stepName) {
+  const ORDER = ['name', 'projects', 'social', 'schedule'];
+  const idx = ORDER.indexOf(stepName);
+  onboardSteps.forEach(s => {
+    const si = ORDER.indexOf(s.dataset.step);
+    s.classList.remove('active', 'done');
+    if (si < idx)      s.classList.add('done');
+    else if (si === idx) s.classList.add('active');
+  });
+}
+
+async function _sendOnboard(text) {
+  if (text.trim()) _appendOnboardMsg('user', text.trim());
+
+  const thinkEl = document.createElement('div');
+  thinkEl.className = 'ob-msg thinking';
+  thinkEl.textContent = '…';
+  onboardMessages.appendChild(thinkEl);
+  onboardMessages.scrollTop = onboardMessages.scrollHeight;
+
+  try {
+    const res = await fetch('/api/onboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text || '' }),
+    }).then(r => r.json());
+
+    thinkEl.remove();
+    if (res.reply) _appendOnboardMsg('agent', res.reply);
+    if (res.step)  _setOnboardStep(res.step);
+    if (res.done) {
+      setTimeout(() => {
+        hideOnboarding();
+        showFeedback('Agent setup complete — your profile is saved.');
+      }, 1200);
+    }
+  } catch {
+    thinkEl.remove();
+    _appendOnboardMsg('agent', 'Trouble connecting. You can skip and continue.');
+  }
+}
+
+function _submitOnboardText() {
+  const text = onboardTextInput.value.trim();
+  if (!text) return;
+  onboardTextInput.value = '';
+  _sendOnboard(text);
+}
+
+// Skip
+onboardSkip.addEventListener('click', async () => {
+  await post('/api/profile', { onboarding_complete: true });
+  hideOnboarding();
+  showFeedback('Setup skipped — you can update your profile anytime.');
+});
+onboardSkip.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Send button / Enter key
+onboardSendBtn.addEventListener('click', _submitOnboardText);
+onboardSendBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+onboardTextInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); _submitOnboardText(); }
+});
+onboardTextInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Voice mic inside onboarding
+onboardMicBtn.addEventListener('click', () => {
+  if (onboardSpeechRec) { stopOnboardVoice(); return; }
+  startOnboardVoice();
+});
+onboardMicBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Absorb all touches so gesture engine ignores the overlay
+onboardOverlay.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+function startOnboardVoice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  onboardSpeechRec = new SR();
+  onboardSpeechRec.continuous = false;
+  onboardSpeechRec.interimResults = true;
+  onboardSpeechRec.lang = 'en-US';
+  onboardMicBtn.textContent = '🔴';
+
+  onboardSpeechRec.onresult = (e) => {
+    let fin = '', inter = '';
+    for (const r of e.results) {
+      if (r.isFinal) fin += r[0].transcript;
+      else inter += r[0].transcript;
+    }
+    onboardTextInput.value = fin || inter;
+  };
+  onboardSpeechRec.onend = () => {
+    onboardMicBtn.textContent = '🎤';
+    onboardSpeechRec = null;
+    const t = onboardTextInput.value.trim();
+    if (t) { onboardTextInput.value = ''; _sendOnboard(t); }
+  };
+  onboardSpeechRec.onerror = () => {
+    onboardMicBtn.textContent = '🎤';
+    onboardSpeechRec = null;
+  };
+  try { onboardSpeechRec.start(); }
+  catch { onboardMicBtn.textContent = '🎤'; onboardSpeechRec = null; }
+}
+
+function stopOnboardVoice() {
+  if (onboardSpeechRec) {
+    try { onboardSpeechRec.abort(); } catch { /* ignore */ }
+    onboardSpeechRec = null;
+  }
+  onboardMicBtn.textContent = '🎤';
+}
+
 // ── Mode toggle ──────────────────────────────────────────────────
 modeBtns.forEach(btn => {
   btn.addEventListener('click', async () => {
@@ -1480,6 +2014,8 @@ modeBtns.forEach(btn => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'start' }),
       }).catch(() => {});
+      // Check if onboarding is needed
+      checkOnboarding();
     } else {
       agentIndicator.classList.remove('visible');
       stopHeartbeat();
@@ -1542,14 +2078,51 @@ function runHeartbeat() {
 }
 
 function showHeartbeatNotice(text) {
-  // Briefly show in hint area rather than overwriting any active response
-  hintEl.textContent = text;
-  hintEl.style.opacity = '1';
-  setTimeout(() => {
-    hintEl.textContent = 'tap to chat · swipe up for apps · swipe down for settings';
-    if (!isProcessing) hintEl.style.opacity = '1';
-  }, 6000);
+  showMsgDisplay(text, 7000);
 }
+
+// ── Termux bridge panel ──────────────────────────────────────────
+const bridgeStatusEl       = document.getElementById('bridge-status');
+const bridgeSetupBtn       = document.getElementById('bridge-setup-btn');
+const bridgeInstructions   = document.getElementById('bridge-instructions');
+
+async function checkBridgeStatus() {
+  try {
+    const data = await fetch('/api/bridge/status').then(r => r.json());
+    if (bridgeStatusEl) {
+      bridgeStatusEl.textContent = data.ready ? 'dir ready' : 'not ready';
+      bridgeStatusEl.style.color = data.ready ? 'var(--accent)' : 'rgba(255,255,255,0.4)';
+    }
+  } catch { if (bridgeStatusEl) bridgeStatusEl.textContent = 'unavailable'; }
+}
+
+bridgeSetupBtn?.addEventListener('click', async () => {
+  if (bridgeInstructions.style.display !== 'none') {
+    bridgeInstructions.style.display = 'none';
+    bridgeSetupBtn.textContent = 'Setup';
+    return;
+  }
+  bridgeSetupBtn.textContent = 'Loading…';
+  try {
+    const text = await fetch('/api/bridge/setup').then(r => r.text());
+    // Show the shell script in a copyable pre block
+    bridgeInstructions.innerHTML = '';
+    const pre = document.createElement('pre');
+    pre.className = 'bridge-script';
+    pre.textContent = text;
+    bridgeInstructions.appendChild(pre);
+    const hint = document.createElement('div');
+    hint.className = 'bridge-hint';
+    hint.textContent = 'Copy to ~/voiceos-bridge.sh in Termux, then: bash ~/voiceos-bridge.sh';
+    bridgeInstructions.appendChild(hint);
+    bridgeInstructions.style.display = '';
+    bridgeSetupBtn.textContent = 'Hide';
+  } catch {
+    bridgeSetupBtn.textContent = 'Setup';
+  }
+});
+bridgeSetupBtn?.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+bridgeInstructions?.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 
 // ── Boot ────────────────────────────────────────────────────────
 async function boot() {
@@ -1560,6 +2133,7 @@ async function boot() {
   fetch('/api/apps').then(r => r.json()).then(apps => { allApps = apps; appsLoadedAt = Date.now(); }).catch(() => {});
   await loadTaskCache();
   resetIdleTimer();
+  checkBridgeStatus();
 }
 
 boot();

@@ -25,11 +25,21 @@ data class HeartbeatProbe(
     val intervalMs: Long,
     /** Subset of tool names to pass to the LLM for this probe. Empty = all tools. */
     val toolNames: List<String>,
-    /** Short, focused prompt — the LLM must respond "[idle]" or ≤ 12 words. */
-    val prompt: String,
+    /** Static prompt — used when promptFactory is null. */
+    val prompt: String = "",
+    /**
+     * Dynamic prompt factory — receives the current user profile map and returns
+     * the prompt string. Return "[idle]" to skip this probe entirely when the
+     * profile has no relevant data (e.g. no projects for project_pulse).
+     */
+    val promptFactory: ((Map<String, Any>) -> String)? = null,
     var enabled: Boolean = true,
     @Volatile var lastRunMs: Long = 0L
-)
+) {
+    /** Build the prompt for a given profile, preferring factory over static string. */
+    fun buildPrompt(profile: Map<String, Any>): String =
+        promptFactory?.invoke(profile) ?: prompt
+}
 
 class ProbeHeartbeat(
     /** Called with a probe when it is due. Return result text, or null to skip. */
@@ -75,6 +85,9 @@ class ProbeHeartbeat(
 
     fun hasPending(): Boolean = synchronized(pendingResults) { pendingResults.isNotEmpty() }
 
+    /** Push a result directly — used by external code (e.g. approved shell commands). */
+    fun pushResult(text: String) = synchronized(pendingResults) { pendingResults.addLast(text) }
+
     // ── Management ─────────────────────────────────────────────────
     fun setEnabled(name: String, enabled: Boolean) = synchronized(probes) {
         probes.firstOrNull { it.name == name }?.enabled = enabled
@@ -116,6 +129,8 @@ class ProbeHeartbeat(
 
         // ── Default probe definitions ──────────────────────────────
         fun defaultProbes() = arrayOf(
+
+            // ── Device / ambient probes ────────────────────────────
             HeartbeatProbe(
                 name        = "notification_triage",
                 intervalMs  = 2 * 60_000L,
@@ -154,6 +169,78 @@ Reply "[idle]" if the task list is healthy and nothing is immediately actionable
                 prompt      = """Background check — battery only.
 Use get_battery. Reply "[idle]" unless battery is below 20% AND not charging.
 If critical, reply ONE sentence: current percentage and charging status."""
+            ),
+
+            // ── Initiative probes — profile-driven ────────────────
+
+            /**
+             * project_pulse — checks git status for the user's active projects.
+             * Only fires when the profile has projects with a termux_path.
+             * Skips silently if the Termux bridge is not running.
+             */
+            HeartbeatProbe(
+                name       = "project_pulse",
+                intervalMs = 20 * 60_000L,
+                toolNames  = listOf("run_shell", "list_tasks", "remember"),
+                promptFactory = { profile ->
+                    @Suppress("UNCHECKED_CAST")
+                    val projs = (profile["projects"] as? List<*>)
+                        ?.filterIsInstance<Map<String, Any>>()
+                        ?.filter { (it["termux_path"] as? String)?.isNotBlank() == true }
+                        ?: emptyList()
+                    if (projs.isEmpty()) "[idle]"
+                    else {
+                        val list = projs.take(3).joinToString("; ") { p ->
+                            "${p["name"]} (${p["termux_path"]})"
+                        }
+                        """Background check — project git status.
+Projects: $list
+For each project use run_shell with command "git status --short" and the project's termux_path as workdir.
+Reply "[idle]" if all repos are clean or bridge unavailable (timeout).
+Otherwise ONE sentence: which project has uncommitted changes and what kind (new files / modified / deleted).
+Do NOT suggest anything. Do NOT ask questions."""
+                    }
+                }
+            ),
+
+            /**
+             * social_nudge — surfaces overdue social goals from the user's profile.
+             * Only fires when the profile has social_goals defined.
+             */
+            HeartbeatProbe(
+                name       = "social_nudge",
+                intervalMs = 6 * 3600_000L,
+                toolNames  = listOf("get_relationship_health", "suggest_social_outreach", "remember"),
+                promptFactory = { profile ->
+                    @Suppress("UNCHECKED_CAST")
+                    val goals = (profile["social_goals"] as? List<*>)
+                        ?.filterIsInstance<Map<String, Any>>() ?: emptyList()
+                    if (goals.isEmpty()) "[idle]"
+                    else {
+                        val people = goals.take(6).mapNotNull { it["person"] as? String }.joinToString(", ")
+                        """Background check — social outreach.
+Tracked people: $people
+Use get_relationship_health to find who is significantly overdue for contact (>20% past their target frequency).
+Reply "[idle]" if nobody is overdue.
+Otherwise ONE sentence naming the most overdue person and how long it has been since contact."""
+                    }
+                }
+            ),
+
+            /**
+             * task_advance — proactively works on the highest-priority pending task.
+             * Uses run_shell, web_search, etc. to make concrete progress.
+             */
+            HeartbeatProbe(
+                name       = "task_advance",
+                intervalMs = 15 * 60_000L,
+                toolNames  = listOf("list_tasks", "run_shell", "web_search", "update_task", "complete_task", "remember"),
+                promptFactory = { _ ->
+                    """Background — proactive task work.
+Use list_tasks to find the highest-priority pending task that can be advanced autonomously.
+If you can make concrete progress right now (run a shell command, look up information, update task notes), do it.
+Report in ONE sentence what you did, or reply "[idle]" if all pending tasks require direct user involvement."""
+                }
             )
         )
     }
