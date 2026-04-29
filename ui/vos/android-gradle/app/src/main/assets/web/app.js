@@ -99,6 +99,8 @@ let isProcessing = false;
 let currentResponse = '';
 let lastTap = 0;
 let allApps = [];         // cached app list for suggestions
+let appsLoadedAt = 0;
+const APP_CACHE_TTL_MS = 15 * 60 * 1000;
 let currentMode = 'assistant';   // 'assistant' | 'agent'
 let heartbeatTimer = null;
 let discoveryStatusTimer = null;
@@ -645,13 +647,14 @@ function closeAllPanels() {
 
 // ── App drawer ──────────────────────────────────────────────────
 async function loadApps() {
-  if (appGrid.dataset.loaded) return;
+  if (Date.now() - appsLoadedAt < APP_CACHE_TTL_MS) return;
   try {
     allApps = await fetch('/api/apps').then(r => r.json());
     renderApps(allApps);
-    appGrid.dataset.loaded = '1';
+    appsLoadedAt = Date.now();
   } catch {
-    appGrid.innerHTML = '<p style="color:rgba(255,255,255,0.4);padding:20px;grid-column:1/-1">App list unavailable</p>';
+    if (!allApps.length)
+      appGrid.innerHTML = '<p style="color:rgba(255,255,255,0.4);padding:20px;grid-column:1/-1">App list unavailable</p>';
   }
 }
 
@@ -2371,7 +2374,7 @@ async function boot() {
   requestAnimationFrame(frame);
   await loadStatus();
   // Pre-load apps and tasks in background
-  fetch('/api/apps').then(r => r.json()).then(apps => { allApps = apps; }).catch(() => {});
+  fetch('/api/apps').then(r => r.json()).then(apps => { allApps = apps; appsLoadedAt = Date.now(); }).catch(() => {});
   await loadTaskCache();
   resetIdleTimer();
   checkBridgeStatus();

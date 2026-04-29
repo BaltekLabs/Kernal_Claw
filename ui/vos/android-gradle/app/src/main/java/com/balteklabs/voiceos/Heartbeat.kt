@@ -149,11 +149,23 @@ class ProbeHeartbeat(
             // ── Device / ambient probes ────────────────────────────
             // ── Native probes — zero LLM cost ─────────────────────
             HeartbeatProbe(
+<<<<<<< HEAD
                 name       = "notification_triage",
                 intervalMs = 2 * 60_000L,
                 toolNames  = emptyList(),
                 isNative   = true,
                 prompt     = ""   // handled by nativeRunner in VoiceOSServer
+=======
+                name        = "notification_triage",
+                intervalMs  = 2 * 60_000L,
+                toolNames   = listOf("get_notifications", "read_sms", "get_recent_calls", "add_task", "list_tasks", "remember"),
+                prompt      = """Background check — notifications, SMS, and recent calls.
+Use get_notifications, read_sms (limit=10), and get_recent_calls (limit=10).
+For each unanswered message from a real person, missed call, or notification requiring action (not ads, social media likes, or system updates):
+  1. Check list_tasks to avoid creating a duplicate.
+  2. If no task exists, create one with add_task (title: "Reply to [name]" or "Follow up: [topic]", priority: high).
+Reply "[idle]" if nothing actionable. Otherwise ONE sentence naming what task was created."""
+>>>>>>> 5cc483512f566fb471d4af2d02f80e9b93886fd8
             ),
             HeartbeatProbe(
                 name       = "battery_watch",
@@ -167,10 +179,22 @@ class ProbeHeartbeat(
             HeartbeatProbe(
                 name        = "calendar_check",
                 intervalMs  = 30 * 60_000L,
-                toolNames   = listOf("read_calendar", "get_device_info"),
-                prompt      = """Background check — calendar only.
-Use read_calendar with days=1. Reply "[idle]" if no events start within 30 minutes.
-Otherwise reply ONE sentence: event name and how soon it starts."""
+                toolNames   = listOf("read_calendar", "get_device_info", "add_task", "set_alarm"),
+                prompt      = """Background check — calendar.
+Use read_calendar with days=1. For each event starting within the next 2 hours:
+  • If no preparation task exists in list_tasks, create one with add_task (e.g. "Prepare for [event]", priority: high).
+  • If the event starts within 30 minutes, set an alarm with set_alarm as a reminder.
+Reply "[idle]" if no events need attention. Otherwise ONE sentence describing the action taken."""
+            ),
+            HeartbeatProbe(
+                name        = "task_review",
+                intervalMs  = 10 * 60_000L,
+                toolNames   = listOf("list_tasks", "add_task", "update_task", "complete_task", "recall", "web_search", "set_alarm"),
+                prompt      = """Background check — task list.
+Use list_tasks. For any high-priority task with a clear next action you can perform right now (web_search for info, set_alarm for a deadline, recall context from memory):
+  • Take the action and update the task with the result using update_task.
+Mark tasks as done with complete_task if they appear resolved based on recent notifications or memory.
+Reply "[idle]" if the task list is healthy and nothing is immediately actionable. Otherwise ONE sentence on what you did."""
             ),
 
             // ── Initiative probes — profile-driven ────────────────
