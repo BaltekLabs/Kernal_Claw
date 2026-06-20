@@ -116,7 +116,14 @@ class VoiceOSServer(
             Regex("(open|launch|start).{0,20}(app|gmail|youtube|maps|chrome|spotify|settings)"),
             Regex("(call|ring|phone).{0,20}\\w+"),
             Regex("(what.s|current|check).{0,10}(time|date|day)"),
-            Regex("(recall|remember|what did you).{0,20}note")
+            Regex("(recall|remember|what did you).{0,20}note"),
+            // Message / inbox queries
+            Regex("(good morning|morning briefing|brief me|daily briefing|plan my day)"),
+            Regex("(\\binbox\\b|catch me up|what did i miss|anything new|message recap|daily recap)"),
+            Regex("(missed calls?|who called|recent calls?)"),
+            Regex("(today.s (schedule|events?|calendar|agenda)|what.s on today|what do i have today)"),
+            Regex("(messages|texts|sms).{0,15}from \\w"),
+            Regex("what did [\\w ]+ (say|send|text)")
         )
         if (localPatterns.any { it.containsMatchIn(q) }) return ModelTier.LOCAL
 
@@ -480,34 +487,61 @@ Start: introduce yourself in one sentence, then ask for their name."""
      */
     private fun handleLocalQuery(query: String): String? {
         val q = query.lowercase().trim()
-        return when {
-            // Task list
-            Regex("(show|list|what are|any|my).{0,20}(task|todo|to-do)").containsMatchIn(q) ->
-                toolListTasks()
 
-            // Who to reach out to — CRM lookup
-            Regex("(who|which).{0,30}(reach out|contact|follow.?up|overdue|haven.t talked)").containsMatchIn(q) ->
-                toolGetRelationshipHealth(mapOf("limit" to 5.0, "min_days_since" to 14.0))
+        // Morning briefing / daily brief
+        if (Regex("(good morning|morning briefing|brief me|daily briefing|plan my day|start my day|what.s today|today.s (plan|agenda))").containsMatchIn(q))
+            return toolMorningBriefing()
 
-            // Battery
-            Regex("(battery|charge).{0,20}(level|percent|status|how much)").containsMatchIn(q) -> {
-                val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
-                val pct = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-                val charging = bm?.isCharging ?: false
-                if (pct < 0) null else "Battery: $pct%${if (charging) " (charging)" else ""}"
-            }
+        // Inbox recap / message summary
+        if (Regex("(\\binbox\\b|catch me up|what did i miss|anything new|what.s new|recap.{0,10}(messages|inbox|texts|sms)|what (messages|texts|sms) (do i have|came in)|message recap|daily recap)").containsMatchIn(q))
+            return toolInboxRecap()
 
-            // Notifications
-            Regex("(what|any|show).{0,20}notification").containsMatchIn(q) ->
-                toolGetPendingAttention(mapOf("limit" to 5.0))
-
-            // Notes/recall
-            Regex("(recall|what did you note|what.*remember|your notes)").containsMatchIn(q) ->
-                toolRecall()
-
-            // Not handled locally
-            else -> null
+        // Messages from a specific contact — extract contact name and return fresh SMS thread
+        val contactMsgMatch = Regex("(messages|texts|sms).{0,15}from ([\\w][\\w ]{2,25})|what did ([\\w ]{3,25}) (say|send|text)").find(q)
+        if (contactMsgMatch != null) {
+            val contact = contactMsgMatch.groupValues.drop(1)
+                .firstOrNull { g -> g.isNotBlank() && g !in setOf("from", "say", "send", "text", "messages", "texts", "sms") }
+            if (!contact.isNullOrBlank())
+                return toolReadSms(mapOf("contact" to contact.trim(), "limit" to 10.0))
         }
+
+        // Missed calls
+        if (Regex("(missed calls?|who called|any calls?|recent calls?)").containsMatchIn(q))
+            return toolGetRecentCalls(mapOf("limit" to 10.0))
+
+        // Today's calendar / schedule
+        if (Regex("(today.s (schedule|events?|calendar|agenda)|what.s on today|what do i have today|schedule for today|\\bmy calendar\\b)").containsMatchIn(q))
+            return toolReadCalendar(mapOf("days" to 1.0))
+
+        // Task list
+        if (Regex("(show|list|what are|any|my).{0,20}(task|todo|to-do)").containsMatchIn(q))
+            return toolListTasks()
+
+        // Prioritize tasks
+        if (Regex("(prioritize|what (task|should i work on)|what.s (most important|next))").containsMatchIn(q))
+            return toolPrioritizeTasks()
+
+        // Who to reach out to — CRM lookup
+        if (Regex("(who|which).{0,30}(reach out|contact|follow.?up|overdue|haven.t talked)").containsMatchIn(q))
+            return toolGetRelationshipHealth(mapOf("limit" to 5.0, "min_days_since" to 14.0))
+
+        // Battery
+        if (Regex("(battery|charge).{0,20}(level|percent|status|how much)").containsMatchIn(q)) {
+            val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            val pct = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+            val charging = bm?.isCharging ?: false
+            if (pct >= 0) return "Battery: $pct%${if (charging) " (charging)" else ""}"
+        }
+
+        // Notifications
+        if (Regex("(what|any|show).{0,20}notification").containsMatchIn(q))
+            return toolGetPendingAttention(mapOf("limit" to 8.0))
+
+        // Notes/recall
+        if (Regex("(recall|what did you note|what.*remember|your notes)").containsMatchIn(q))
+            return toolRecall()
+
+        return null
     }
 
     /** Zero-LLM battery check. Only surfaces if critical. */
@@ -519,18 +553,43 @@ Start: introduce yourself in one sentence, then ask for their name."""
         return if (pct in 1..19 && !charging) "Battery at $pct% — not charging" else null
     }
 
-    /** Zero-LLM notification triage. Checks ContextStore for high-weight unread items. */
+    /** Zero-LLM notification triage. Checks raw SMS first (always fresh), then ContextStore. */
     private fun nativeNotificationTriage(): String? {
+        val cutoff = System.currentTimeMillis() - 10 * 60_000L   // last 10 min
+
+        // ── 1. Check raw SMS for very recent unread messages ──────
+        try {
+            val cur = context.contentResolver.query(
+                android.net.Uri.parse("content://sms/inbox"),
+                arrayOf("address", "body", "date", "read"),
+                "date > ? AND read = 0", arrayOf(cutoff.toString()), "date DESC"
+            )
+            var unreadCount = 0
+            var firstSender = ""
+            var firstPreview = ""
+            cur?.use { c ->
+                while (c.moveToNext()) {
+                    unreadCount++
+                    if (unreadCount == 1) {
+                        val addr = c.getString(0) ?: ""
+                        firstSender  = try { resolveContactName(addr) } catch (_: Exception) { addr.takeLast(10) }
+                        firstPreview = (c.getString(1) ?: "").take(60).replace('\n', ' ')
+                    }
+                }
+            }
+            if (unreadCount > 0) {
+                return if (unreadCount == 1) "SMS from $firstSender: \"$firstPreview\""
+                else "$unreadCount new texts — latest from $firstSender"
+            }
+        } catch (_: Exception) { /* fall through to ContextStore check */ }
+
+        // ── 2. Fall back to ContextStore for other high-weight items ──
         return try {
-            val items = contextStore.getPendingAttention(5)
+            val items  = contextStore.getPendingAttention(5)
             if (items.isEmpty()) return null
-            // Only surface items < 10 minutes old with weight >= 2.0
-            val cutoff = System.currentTimeMillis() - 10 * 60_000L
             val urgent = items.filter { it.weight >= 2.0 && it.timestamp > cutoff }
             if (urgent.isEmpty()) return null
-            val top = urgent.first()
-            // Surface at most one item per check, de-duped by title
-            top.title.take(80)
+            urgent.first().title.take(80)
         } catch (_: Exception) { null }
     }
 
@@ -1058,7 +1117,15 @@ Start: introduce yourself in one sentence, then ask for their name."""
             mapOf(
                 "contact" to mapOf("type" to "string",  "description" to "Contact name or phone number"),
                 "limit"   to mapOf("type" to "integer", "description" to "Number of messages to include (default 20)")
-            ), listOf("contact"))
+            ), listOf("contact")),
+
+        ToolDef("inbox_recap",
+            "Fresh read of your inbox: recent SMS threads grouped by contact (with message previews), missed calls, " +
+            "and important notifications — all in one call. Call this when the user asks about messages, inbox, " +
+            "what they missed, wants to catch up, or asks for a daily recap. Always prefer this over reading the " +
+            "device snapshot for message questions.",
+            mapOf("hours" to mapOf("type" to "integer", "description" to "How many hours back to look (default 24)")),
+            emptyList())
     )
 
     // ════════════════════════════════════════════════════════════════
@@ -1938,20 +2005,26 @@ Start: introduce yourself in one sentence, then ask for their name."""
                 description        = "SMS, calls, email, WhatsApp, notifications, contacts",
                 systemPromptSuffix = """
 ## Active skill: Communication
-Focus on the user's communication needs. Check notifications, SMS, call log as needed.
-For outgoing messages: use draft_email to queue emails, send_whatsapp for WhatsApp, send_sms for SMS.
-All outgoing messages are queued for user approval before sending — never send without queuing.
-Resolve contact names to numbers using your knowledge of the conversation or ask the user.""",
+Focus on the user's communication needs.
+- **Inbox / message recap:** Call inbox_recap first when user asks about messages, what they missed, or wants a summary.
+- **Specific conversation:** Use summarize_sms_thread(contact="name") for a full thread, or read_sms(contact="name") for raw messages.
+- **Unread threads:** Use get_message_threads(unread_only=true) from the context index (may be slightly stale; use read_sms for real-time).
+- For outgoing messages: draft_email for email, send_sms for SMS, send_whatsapp for WhatsApp — all queue for approval.
+- Missed calls: get_recent_calls filtered to missed type.
+- Never answer message questions from the device snapshot — always call the relevant tool for fresh data.""",
                 toolNames          = listOf(
+                    "inbox_recap", "summarize_sms_thread",
                     "context_search", "get_pending_attention", "get_message_threads",
                     "read_sms", "get_recent_calls", "get_notifications",
                     "call_contact", "send_sms", "draft_email", "send_whatsapp",
-                    "remember", "recall", "get_device_info"
+                    "remember", "recall", "get_device_info", "search_contacts"
                 ),
                 triggerWords       = listOf(
                     "text", "sms", "message", "email", "mail", "call", "phone",
                     "whatsapp", "telegram", "contact", "notification", "inbox",
-                    "reply", "respond", "send", "write to", "follow up"
+                    "reply", "respond", "send", "write to", "follow up",
+                    "missed call", "unread", "new messages", "what did", "who texted",
+                    "recap", "catch me up", "what came in", "check messages"
                 )
             ),
             SkillDef(
@@ -2060,18 +2133,18 @@ If the accessibility service is not enabled, tell the user to go to Settings ›
                 systemPromptSuffix = """
 ## Active skill: Daily Planning
 Help the user plan and manage their day effectively.
-Start with morning_briefing to get a full picture, then use:
-- prioritize_tasks to rank what to work on
-- read_calendar / create_event for scheduling
-- suggest_social_outreach for relationship maintenance
-- add_task / update_task to capture and track action items
-Proactively suggest what to focus on based on priority, deadlines, and relationship health.""",
+- **Morning brief / start of day:** Call morning_briefing for a complete picture (calendar, tasks, messages, relationship nudges).
+- **Inbox awareness:** Call inbox_recap to check what messages came in since yesterday.
+- **Task prioritization:** Use prioritize_tasks to rank the task list by urgency.
+- **Today's schedule:** Use read_calendar(days=1) for events today.
+- After briefing, proactively suggest the single most important thing to work on or respond to.""",
                 toolNames          = listOf(
-                    "morning_briefing", "prioritize_tasks",
+                    "morning_briefing", "prioritize_tasks", "inbox_recap",
                     "list_tasks", "add_task", "update_task", "complete_task",
                     "read_calendar", "create_event", "set_alarm", "set_timer",
                     "get_pending_attention", "context_search",
                     "suggest_social_outreach", "get_relationship_health",
+                    "get_followup_contacts", "get_birthday_reminders",
                     "remember", "recall", "get_device_info"
                 ),
                 triggerWords       = listOf(
@@ -2079,7 +2152,8 @@ Proactively suggest what to focus on based on priority, deadlines, and relations
                     "what should i", "prioritize", "focus on", "plan my day",
                     "what's important", "brief me", "catch me up",
                     "what do i have today", "agenda", "plan for the day",
-                    "productivity", "goals for today", "what next"
+                    "productivity", "goals for today", "what next",
+                    "daily recap", "start my day", "today's schedule"
                 )
             ),
             SkillDef(
@@ -2803,6 +2877,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                 "morning_briefing"      -> toolMorningBriefing()
                 "prioritize_tasks"      -> toolPrioritizeTasks()
                 "summarize_sms_thread"  -> toolSummarizeSmsThread(args)
+                "inbox_recap"           -> toolInboxRecap(args)
                 else                -> "Unknown tool: $name"
             }
         } catch (e: Exception) {
@@ -3804,6 +3879,30 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             } else sb.appendLine("Notification access not enabled.")
         }
 
+        // Recent SMS — show today's unread threads
+        sb.appendLine()
+        sb.appendLine("### Messages")
+        try {
+            val todayCutoff = System.currentTimeMillis() - 24 * 3_600_000L
+            val cur = context.contentResolver.query(
+                android.net.Uri.parse("content://sms/inbox"),
+                arrayOf("address", "body", "date"),
+                "date > ?", arrayOf(todayCutoff.toString()), "date DESC"
+            )
+            val senders = LinkedHashSet<String>()
+            var count = 0
+            cur?.use { c ->
+                while (c.moveToNext()) {
+                    count++
+                    val addr = c.getString(0) ?: continue
+                    val name = try { resolveContactName(addr) } catch (_: Exception) { addr.takeLast(10) }
+                    if (senders.size < 5) senders += name
+                }
+            }
+            if (count == 0) sb.appendLine("No messages in the last 24h.")
+            else sb.appendLine("$count message(s) from: ${senders.joinToString(", ")}. Say **inbox recap** for details.")
+        } catch (_: Exception) { sb.appendLine("SMS unavailable.") }
+
         // Social nudges
         sb.appendLine()
         sb.appendLine("### Relationship Nudges")
@@ -3895,6 +3994,97 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             if (unread > 0) sb.appendLine("**Unread messages:** $unread")
             sb.toString().trimEnd()
         } catch (e: Exception) { "SMS read failed: ${e.message}" }
+    }
+
+    private fun toolInboxRecap(args: Map<String, Any> = emptyMap()): String {
+        val hoursBack = (args["hours"] as? Double)?.toInt() ?: 24
+        val cutoffMs  = System.currentTimeMillis() - hoursBack * 3_600_000L
+        val sb = StringBuilder("## Inbox — last ${hoursBack}h\n\n")
+
+        // ── SMS threads (grouped by contact, fresh read) ──────────
+        try {
+            val cur = context.contentResolver.query(
+                android.net.Uri.parse("content://sms"),
+                arrayOf("address", "body", "date", "type", "read"),
+                "date > ?", arrayOf(cutoffMs.toString()), "date DESC"
+            )
+            // Group messages by resolved contact name, preserving first-seen order (most recent thread first)
+            val byContact = LinkedHashMap<String, MutableList<Triple<Long, String, Int>>>()
+            cur?.use { c ->
+                while (c.moveToNext()) {
+                    val addr = c.getString(0) ?: continue
+                    val body = c.getString(1) ?: ""
+                    val date = c.getLong(2)
+                    val type = c.getInt(3)   // 1=inbox/received, 2=sent
+                    val name = try { resolveContactName(addr) } catch (_: Exception) { addr.takeLast(10) }
+                    byContact.getOrPut(name) { mutableListOf() } += Triple(date, body, type)
+                }
+            }
+            if (byContact.isEmpty()) {
+                sb.appendLine("**SMS:** No messages in the last ${hoursBack}h.")
+            } else {
+                sb.appendLine("**SMS threads (${byContact.size}):**")
+                byContact.entries.take(10).forEach { (name, msgs) ->
+                    val latest   = msgs.maxByOrNull { it.first }!!
+                    val incoming = latest.third == 1
+                    val ageMs    = System.currentTimeMillis() - latest.first
+                    val age      = when { ageMs < 3_600_000 -> "${ageMs/60_000}m ago"; else -> "${ageMs/3_600_000}h ago" }
+                    val preview  = latest.second.take(120).replace('\n', ' ')
+                    val inCount  = msgs.count { it.third == 1 }
+                    val unreadTag = if (inCount > 0) " [${inCount} in]" else ""
+                    val who       = if (incoming) name else "You"
+                    sb.appendLine("• **$name**$unreadTag [$age] $who: \"$preview\"")
+                }
+            }
+        } catch (e: Exception) { sb.appendLine("SMS: ${e.message}") }
+
+        // ── Missed calls ──────────────────────────────────────────
+        sb.appendLine()
+        try {
+            val cur = context.contentResolver.query(
+                android.provider.CallLog.Calls.CONTENT_URI,
+                arrayOf(android.provider.CallLog.Calls.NUMBER,
+                        android.provider.CallLog.Calls.TYPE,
+                        android.provider.CallLog.Calls.DATE,
+                        android.provider.CallLog.Calls.CACHED_NAME),
+                "${android.provider.CallLog.Calls.TYPE} = ? AND ${android.provider.CallLog.Calls.DATE} > ?",
+                arrayOf(android.provider.CallLog.Calls.MISSED_TYPE.toString(), cutoffMs.toString()),
+                "${android.provider.CallLog.Calls.DATE} DESC"
+            )
+            val missed = mutableListOf<String>()
+            cur?.use { c ->
+                while (c.moveToNext() && missed.size < 5) {
+                    val num  = c.getString(0) ?: continue
+                    val name = c.getString(3)?.takeIf { it.isNotBlank() }
+                        ?: try { resolveContactName(num) } catch (_: Exception) { num.takeLast(10) }
+                    val ageMs = System.currentTimeMillis() - c.getLong(2)
+                    val age   = when { ageMs < 3_600_000 -> "${ageMs/60_000}m ago"; else -> "${ageMs/3_600_000}h ago" }
+                    missed += "$name [$age]"
+                }
+            }
+            if (missed.isEmpty()) sb.appendLine("**Missed calls:** None.")
+            else { sb.appendLine("**Missed calls:**"); missed.forEach { sb.appendLine("• $it") } }
+        } catch (e: Exception) { sb.appendLine("Missed calls: ${e.message}") }
+
+        // ── Notifications ─────────────────────────────────────────
+        sb.appendLine()
+        if (isNotificationListenerEnabled()) {
+            val notifs = VoiceOSNotificationService.getRecent()
+                .filter { (it["time"] as? Long ?: 0L) > cutoffMs }
+                .take(6)
+            if (notifs.isEmpty()) sb.appendLine("**Notifications:** None in the last ${hoursBack}h.")
+            else {
+                sb.appendLine("**Notifications (${notifs.size}):**")
+                notifs.forEach { n ->
+                    val app   = n["app"]   as? String ?: "?"
+                    val title = n["title"] as? String ?: ""
+                    val text  = (n["text"] as? String ?: "").take(100)
+                    sb.appendLine("• **$app**${if (title.isNotBlank()) " — $title" else ""}: $text")
+                }
+            }
+        } else { sb.appendLine("**Notifications:** Access not enabled (Settings → Apps → Notification access → VoiceOS).") }
+
+        return sb.toString().trimEnd()
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -4198,8 +4388,11 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
 - Use add_task (never remember) for to-do items.
 - draft_email / send_sms / send_whatsapp always queue for approval.
 - call_contact and navigate open the app directly.
-- **Tasks are completely independent items.** Never infer that tasks are related or sequential just because they appear in the same list. Never combine the context of separate tasks. Never act on multiple tasks in a single turn unless the user explicitly asks you to work on multiple tasks. One task about texting someone is not connected to another task about a payment or a purchase.
-- **Never act on a task autonomously.** Only advance a task when the user explicitly asks "work on this task" or "do [task title]". Listing tasks does not mean the user wants them executed.$profile$ctx$skill"""
+- **Tasks are completely independent items.** Never infer that tasks are related or sequential just because they appear in the same list. Never combine the context of separate tasks. Never act on multiple tasks in a single turn unless the user explicitly asks you to work on multiple tasks.
+- **Never act on a task autonomously.** Only advance a task when the user explicitly asks "work on this task" or "do [task title]". Listing tasks does not mean the user wants them executed.
+- **Messages & inbox:** When the user asks about messages, SMS, inbox, what they missed, or wants a recap — ALWAYS call inbox_recap or read_sms. Do not answer from the device snapshot; it may be stale. For a specific person: call read_sms(contact="name") or summarize_sms_thread(contact="name").
+- **Daily events / schedule:** When asked about today's schedule, calendar, or events — call read_calendar(days=1). Do not guess from snapshot.
+- **Morning / daily briefing:** Call morning_briefing when user says "good morning", "brief me", "plan my day", or asks for a daily summary.$profile$ctx$skill"""
     }
 
     private fun buildLiveContext(minimal: Boolean = false): String {

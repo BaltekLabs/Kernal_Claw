@@ -149,23 +149,11 @@ class ProbeHeartbeat(
             // ── Device / ambient probes ────────────────────────────
             // ── Native probes — zero LLM cost ─────────────────────
             HeartbeatProbe(
-<<<<<<< HEAD
                 name       = "notification_triage",
                 intervalMs = 2 * 60_000L,
                 toolNames  = emptyList(),
                 isNative   = true,
                 prompt     = ""   // handled by nativeRunner in VoiceOSServer
-=======
-                name        = "notification_triage",
-                intervalMs  = 2 * 60_000L,
-                toolNames   = listOf("get_notifications", "read_sms", "get_recent_calls", "add_task", "list_tasks", "remember"),
-                prompt      = """Background check — notifications, SMS, and recent calls.
-Use get_notifications, read_sms (limit=10), and get_recent_calls (limit=10).
-For each unanswered message from a real person, missed call, or notification requiring action (not ads, social media likes, or system updates):
-  1. Check list_tasks to avoid creating a duplicate.
-  2. If no task exists, create one with add_task (title: "Reply to [name]" or "Follow up: [topic]", priority: high).
-Reply "[idle]" if nothing actionable. Otherwise ONE sentence naming what task was created."""
->>>>>>> 5cc483512f566fb471d4af2d02f80e9b93886fd8
             ),
             HeartbeatProbe(
                 name       = "battery_watch",
@@ -271,18 +259,17 @@ Do NOT suggest actions. Do NOT mention other tasks. Do NOT combine tasks."""
                 name       = "context_digest",
                 intervalMs = 5 * 60_000L,
                 toolNames  = listOf(
-                    "get_pending_attention", "context_search", "get_message_threads",
+                    "get_pending_attention", "inbox_recap", "get_message_threads",
                     "get_notifications", "read_sms", "get_relationship_health",
                     "remember"
                 ),
-                prompt     = """Background check — review what needs attention.
-Use get_pending_attention to retrieve high-priority unread messages, notifications, and upcoming events.
-If nothing needs attention, reply "[idle]".
-If something genuinely needs the user's attention, reply with ONE or TWO specific action proposals (≤20 words total), e.g.:
-  "3 unread texts from Alice — want me to draft a reply?"
-  "Team standup in 18 min"
-Do NOT list every item. Pick the single most important thing. Do not ask questions about routine items.
-Do NOT create tasks. Do NOT modify anything."""
+                prompt     = """Background check — review what needs attention right now.
+Step 1: Call inbox_recap to get a fresh read of SMS and missed calls from the last 2 hours (pass hours=2).
+Step 2: If inbox_recap shows any new SMS from real people or missed calls, surface the MOST IMPORTANT one in ONE sentence with the actual content, e.g.:
+  "Josh texted: 'Are you free this Saturday?' — want me to reply?"
+  "Missed call from Mom 12 min ago"
+Step 3: If inbox is quiet, call get_pending_attention(limit=5). Surface anything with a calendar event starting soon (< 30 min).
+Reply "[idle]" if nothing in the last 2h needs attention. Do NOT create tasks. Do NOT modify anything."""
             )
         )
     }
