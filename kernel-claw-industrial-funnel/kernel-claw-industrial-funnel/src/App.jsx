@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 
 const LEAD_ENDPOINT = import.meta.env.VITE_LEAD_ENDPOINT || '';
-const FALLBACK_EMAIL = 'sales@balteksystems.com';
+const FALLBACK_EMAIL = 'questions@balteklab.com';
 
 function App() {
   const [form, setForm] = useState({
@@ -74,7 +74,7 @@ function App() {
       window.location.href = `mailto:${FALLBACK_EMAIL}?subject=${subject}&body=${body}`;
       setStatus('Opening your email client...');
     } catch (error) {
-      setStatus('Something went wrong. Email sales@balteksystems.com directly.');
+      setStatus('Something went wrong. Email questions@balteklab.com directly.');
     }
   };
 
