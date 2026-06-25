@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 
 const LEAD_ENDPOINT = import.meta.env.VITE_LEAD_ENDPOINT || '';
-const FALLBACK_EMAIL = 'sales@balteksystems.com';
+const FALLBACK_EMAIL = 'questions@balteklab.com';
 
 function App() {
   const [form, setForm] = useState({
@@ -41,7 +41,7 @@ function App() {
 
     const payload = {
       ...form,
-      source: 'Kernel Claw FieldOps Funnel',
+      source: 'FieldAI Funnel',
       submittedAt: new Date().toISOString()
     };
 
@@ -67,14 +67,14 @@ function App() {
         return;
       }
 
-      const subject = encodeURIComponent('Kernel Claw FieldOps Pilot Request');
+      const subject = encodeURIComponent('FieldAI Pilot Request');
       const body = encodeURIComponent(
         `New pilot request\n\nName: ${form.name}\nCompany: ${form.company}\nEmail: ${form.email}\nPhone: ${form.phone}\nRole: ${form.role}\nTimeline: ${form.timeline}\n\nUse Case:\n${form.useCase}`
       );
       window.location.href = `mailto:${FALLBACK_EMAIL}?subject=${subject}&body=${body}`;
       setStatus('Opening your email client...');
     } catch (error) {
-      setStatus('Something went wrong. Email sales@balteksystems.com directly.');
+      setStatus('Something went wrong. Email questions@balteklab.com directly.');
     }
   };
 
@@ -86,7 +86,7 @@ function App() {
             <div className="brandMark">
               <Bot size={22} />
             </div>
-            <span>Kernel Claw FieldOps</span>
+            <span>FieldAI</span>
           </div>
           <a className="navCta" href="#pilot">Request Pilot</a>
         </nav>
@@ -103,7 +103,7 @@ function App() {
             </h1>
 
             <p className="heroText">
-              Kernel Claw FieldOps combines a hardened Android interface, local device context,
+              FieldAI combines a hardened mobile interface, local device context,
               approved command execution, and AI-assisted troubleshooting for controls, robotics,
               maintenance, and industrial support teams.
             </p>
@@ -212,8 +212,8 @@ function App() {
           />
           <Feature
             icon={<Lock />}
-            title="Private deployment options"
-            text="Deploy as company-owned devices, private APK, managed tablets, or internal support tool."
+            title="Kernel Claw edge foundation"
+            text="Optionally pair FieldAI with the Kernel Claw Linux runtime for local telemetry, controlled execution, and deeper system context."
           />
         </div>
       </section>
@@ -224,7 +224,7 @@ function App() {
             <p className="kicker">Pilot offer</p>
             <h2>Start with one machine, one team, one measurable workflow.</h2>
             <p>
-              We configure Kernel Claw FieldOps around your existing troubleshooting process:
+              We configure FieldAI around your existing troubleshooting process:
               procedures, alarm history, manuals, support notes, scripts, escalation paths,
               and technician workflows.
             </p>
@@ -338,7 +338,7 @@ function App() {
           {status && <p className="status">{status}</p>}
 
           <p className="finePrint">
-            No generic chatbot demo. The pilot is built around your actual industrial workflow.
+            No generic chatbot demo. FieldAI is configured around your actual industrial workflow.
           </p>
         </form>
       </section>
@@ -348,9 +348,9 @@ function App() {
           <div className="brandMark">
             <Cpu size={18} />
           </div>
-          <span>Kernel Claw FieldOps</span>
+          <span>FieldAI</span>
         </div>
-        <p>Industrial AI interface system by Baltek Systems Services LLC.</p>
+        <p>A Waveform Analytics product. Kernel Claw provides optional trusted Linux edge technology.</p>
       </footer>
     </main>
   );
