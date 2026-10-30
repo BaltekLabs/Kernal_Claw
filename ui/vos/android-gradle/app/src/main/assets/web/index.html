@@ -196,8 +196,12 @@
       <button id="task-overlay-close" aria-label="Close">✕</button>
     </div>
     <div id="task-overlay-list"></div>
+    <div id="task-quick-add">
+      <input id="task-quick-input" type="text" placeholder="Quick add task…" autocomplete="off" maxlength="120">
+      <button id="task-quick-btn">+</button>
+    </div>
     <div id="task-overlay-footer">
-      <span id="task-overlay-hint">tap a task · agent can advance it</span>
+      <span id="task-overlay-hint">tap to advance · swipe left to complete</span>
     </div>
   </div>
 
@@ -212,8 +216,20 @@
     <div id="notif-card-actions">
       <button id="notif-ask-btn">Ask agent</button>
       <button id="notif-task-btn">Add as task</button>
+      <button id="notif-reply-btn" style="display:none">↩ Reply</button>
       <button id="notif-dismiss-btn">✕</button>
     </div>
+    <div id="notif-reply-row" style="display:none">
+      <input id="notif-reply-input" type="text" placeholder="Type reply…" autocomplete="off" maxlength="500">
+      <button id="notif-reply-send">Send</button>
+    </div>
+  </div>
+
+  <!-- ── Heartbeat / agent notice banner ──────────────────────── -->
+  <div id="hb-notice" role="status" aria-live="polite">
+    <span id="hb-notice-icon">🤖</span>
+    <span id="hb-notice-text"></span>
+    <button id="hb-notice-close">✕</button>
   </div>
 
   <!-- ── Notification access prompt (shown in settings) ───────── -->

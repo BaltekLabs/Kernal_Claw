@@ -2373,6 +2373,8 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             uri == "/api/notifications" && session.method == Method.GET    -> handleGetNotifications()
             uri == "/api/notifications" && session.method == Method.DELETE -> handleDismissNotification(session)
             uri == "/api/notifications/settings" && session.method == Method.POST -> handleOpenNotifSettings()
+            uri == "/api/notifications/actions" && session.method == Method.GET -> handleGetNotifActions(session)
+            uri == "/api/notifications/reply"   && session.method == Method.POST -> handleNotifReply(session)
 
             uri == "/api/ollama/test" -> handleOllamaTest()
 
@@ -4856,6 +4858,21 @@ done
     private fun handleOpenNotifSettings(): Response {
         context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS").apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
         return jsonResponse(mapOf("ok" to true))
+    }
+
+    private fun handleGetNotifActions(session: IHTTPSession): Response {
+        val key = session.parameters["key"]?.firstOrNull()
+            ?: return jsonResponse(mapOf("error" to "missing key"), Status.BAD_REQUEST)
+        val actions = VoiceOSNotificationService.getNotificationActions(key)
+        return jsonResponse(mapOf("actions" to actions))
+    }
+
+    private fun handleNotifReply(session: IHTTPSession): Response {
+        val body = parseBody(session)
+        val key  = body["key"]  as? String ?: return jsonResponse(mapOf("ok" to false, "error" to "missing key"), Status.BAD_REQUEST)
+        val text = body["text"] as? String ?: return jsonResponse(mapOf("ok" to false, "error" to "missing text"), Status.BAD_REQUEST)
+        val ok   = VoiceOSNotificationService.replyToNotification(context, key, text)
+        return jsonResponse(mapOf("ok" to ok))
     }
 
     // ── Ollama test ───────────────────────────────────────────────

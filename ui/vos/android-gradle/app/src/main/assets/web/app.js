@@ -1762,6 +1762,8 @@ const taskOverlayList  = document.getElementById('task-overlay-list');
 const taskOverlayCount = document.getElementById('task-overlay-count');
 const taskOverlayAdd   = document.getElementById('task-overlay-add');
 const taskOverlayClose = document.getElementById('task-overlay-close');
+const taskQuickInput   = document.getElementById('task-quick-input');
+const taskQuickBtn     = document.getElementById('task-quick-btn');
 
 let taskCache       = [];
 let taskOverlayOpen = false;
@@ -1840,11 +1842,19 @@ function renderTaskOverlay() {
          <div class="tov-title">${escHtml(task.title)}</div>
          ${notes ? `<div class="tov-meta">${notes}</div>` : ''}
        </div>
-       <button class="tov-advance" data-id="${task.id}" data-title="${escHtml(task.title)}">▶ advance</button>`;
+       <button class="tov-advance" data-id="${task.id}" data-title="${escHtml(task.title)}">▶ advance</button>
+       <div class="tov-done-reveal">✓ Done</div>`;
 
     // Tap item → advance via agent
     el.addEventListener('click', (e) => {
       if (e.target.classList.contains('tov-advance')) return;
+      if (e.target.classList.contains('tov-done-reveal')) return;
+      if (el.classList.contains('swipe-reveal')) {
+        // Second tap when swipe-reveal is showing: complete the task
+        el.classList.remove('swipe-reveal');
+        deleteTask(task.id).then(() => renderTaskOverlay());
+        return;
+      }
       advanceTask(task);
     });
 
@@ -1856,6 +1866,43 @@ function renderTaskOverlay() {
     });
     advBtn.addEventListener('touchstart', (e) => {
       e.stopPropagation();
+    }, { passive: true });
+
+    // Done reveal — tap the green "Done" panel
+    el.querySelector('.tov-done-reveal').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteTask(task.id).then(() => renderTaskOverlay());
+    });
+
+    // Swipe-to-complete touch gesture
+    let swipeStartX = 0;
+    let swipeStartY = 0;
+    let swipeMoved  = false;
+    el.addEventListener('touchstart', (ev) => {
+      swipeStartX = ev.touches[0].clientX;
+      swipeStartY = ev.touches[0].clientY;
+      swipeMoved  = false;
+    }, { passive: true });
+    el.addEventListener('touchmove', (ev) => {
+      const dx = ev.touches[0].clientX - swipeStartX;
+      const dy = ev.touches[0].clientY - swipeStartY;
+      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) swipeMoved = true;
+    }, { passive: true });
+    el.addEventListener('touchend', () => {
+      if (!swipeMoved) return;
+      const dx = (el._lastX || swipeStartX) - swipeStartX;
+      // handled by touchmove, just check reveal state via swipeMoved
+    }, { passive: true });
+
+    // Track continuous swipe for reveal
+    el.addEventListener('touchmove', (ev) => {
+      const dx = swipeStartX - ev.touches[0].clientX;
+      if (dx > 55) {
+        el.classList.add('swipe-reveal');
+        clearTimeout(overlayHideTimer);
+      } else if (dx < 10) {
+        el.classList.remove('swipe-reveal');
+      }
     }, { passive: true });
 
     taskOverlayList.appendChild(el);
@@ -1935,16 +1982,37 @@ taskOverlay.addEventListener('touchend', e => {
   e.stopPropagation();
 }, { passive: true });
 
-taskOverlayAdd.addEventListener('click', () => {
-  hideTaskOverlay();
-  showPanel('input');
-  chatInput.value = 'Add task: ';
-  refreshInputDisplay();
-  // Pre-filled text — switch to keyboard so user can dictate or edit
-  showInputKeyboardMode();
-  setTimeout(() => { chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length; }, 100);
+// "+" header button — focus the inline quick-add input instead of navigating away
+taskOverlayAdd.addEventListener('click', (e) => {
+  e.stopPropagation();
+  clearTimeout(overlayHideTimer);  // keep overlay open
+  taskQuickInput.focus();
 });
 taskOverlayAdd.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+// Inline quick-add
+async function submitQuickTask() {
+  const title = taskQuickInput.value.trim();
+  if (!title) return;
+  taskQuickInput.value = '';
+  taskQuickBtn.disabled = true;
+  await createTask(title, 'medium');
+  taskQuickBtn.disabled = false;
+  renderTaskOverlay();
+  clearTimeout(overlayHideTimer);
+  overlayHideTimer = setTimeout(hideTaskOverlay, OVERLAY_AUTO_HIDE_MS);
+}
+taskQuickBtn.addEventListener('click', (e) => { e.stopPropagation(); submitQuickTask(); });
+taskQuickInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitQuickTask(); }
+});
+taskQuickInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+taskQuickBtn.addEventListener('touchstart',   e => e.stopPropagation(), { passive: true });
+// Keep overlay alive while typing in quick-add
+taskQuickInput.addEventListener('focus', () => clearTimeout(overlayHideTimer));
+taskQuickInput.addEventListener('blur',  () => {
+  overlayHideTimer = setTimeout(hideTaskOverlay, OVERLAY_AUTO_HIDE_MS);
+});
 
 // ── Notification card ─────────────────────────────────────────────
 const notifCard        = document.getElementById('notif-card');
@@ -1954,9 +2022,18 @@ const notifCardTitle   = document.getElementById('notif-card-title');
 const notifCardText    = document.getElementById('notif-card-text');
 const notifAskBtn      = document.getElementById('notif-ask-btn');
 const notifTaskBtn     = document.getElementById('notif-task-btn');
+const notifReplyBtn    = document.getElementById('notif-reply-btn');
+const notifReplyRow    = document.getElementById('notif-reply-row');
+const notifReplyInput  = document.getElementById('notif-reply-input');
+const notifReplySend   = document.getElementById('notif-reply-send');
 const notifDismissBtn  = document.getElementById('notif-dismiss-btn');
 const notifSettingsBtn = document.getElementById('notif-settings-btn');
 const notifSettingsSt  = document.getElementById('notif-settings-status');
+
+const hbNotice         = document.getElementById('hb-notice');
+const hbNoticeText     = document.getElementById('hb-notice-text');
+const hbNoticeClose    = document.getElementById('hb-notice-close');
+let hbNoticeTimer      = null;
 
 let currentNotif    = null;
 let notifAutoHide   = null;
@@ -1979,14 +2056,34 @@ function showNotifCard(n) {
   notifCardTime.textContent  = relTime(n.time);
   notifCardTitle.textContent = n.title || '';
   notifCardText.textContent  = n.text  || '';
+  // Show reply button if the notification supports inline reply (checked lazily via API)
+  notifReplyBtn.style.display = n.hasReply ? '' : 'none';
+  notifReplyRow.style.display = 'none';
+  notifReplyInput.value = '';
   notifCard.classList.add('visible');
   clearTimeout(notifAutoHide);
   notifAutoHide = setTimeout(hideNotifCard, NOTIF_AUTO_HIDE_MS);
+  // Asynchronously check if this notification has a reply action
+  if (!n.hasReplyChecked) {
+    fetch(`/api/notifications/actions?key=${encodeURIComponent(n.key)}`)
+      .then(r => r.json())
+      .then(d => {
+        n.hasReplyChecked = true;
+        const hasReply = Array.isArray(d.actions) && d.actions.some(a =>
+          /reply|respond|answer/i.test(a));
+        n.hasReply = hasReply;
+        if (hasReply && currentNotif === n && notifCard.classList.contains('visible')) {
+          notifReplyBtn.style.display = '';
+        }
+      })
+      .catch(() => {});
+  }
 }
 
 function hideNotifCard() {
   notifCard.classList.remove('visible');
   clearTimeout(notifAutoHide);
+  notifReplyRow.style.display = 'none';
 }
 
 notifDismissBtn.addEventListener('click', (e) => {
@@ -2021,6 +2118,50 @@ notifTaskBtn.addEventListener('click', (e) => {
     loadTaskCache().then(() => showTaskOverlay(false));
   });
 });
+
+// Reply button — toggle inline reply row
+notifReplyBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  clearTimeout(notifAutoHide);   // keep card open while replying
+  notifReplyRow.style.display = notifReplyRow.style.display === 'none' ? '' : 'none';
+  if (notifReplyRow.style.display !== 'none') {
+    setTimeout(() => notifReplyInput.focus(), 50);
+  }
+});
+
+function sendNotifReply() {
+  const text = notifReplyInput.value.trim();
+  if (!text || !currentNotif) return;
+  const key = currentNotif.key;
+  notifReplySend.disabled = true;
+  fetch('/api/notifications/reply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, text }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        seenNotifKeys.add(key);
+        hideNotifCard();
+        showFeedback('Reply sent');
+      } else {
+        notifReplyInput.value = '';
+        notifReplySend.disabled = false;
+        showFeedback('Reply failed — try again');
+      }
+    })
+    .catch(() => {
+      notifReplySend.disabled = false;
+      showFeedback('Reply failed');
+    });
+}
+
+notifReplySend.addEventListener('click', (e) => { e.stopPropagation(); sendNotifReply(); });
+notifReplyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendNotifReply(); } });
+notifReplyInput.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+notifReplySend.addEventListener('touchstart',  e => e.stopPropagation(), { passive: true });
+notifReplyBtn.addEventListener('touchstart',   e => e.stopPropagation(), { passive: true });
 
 notifAskBtn.addEventListener('touchstart',     e => e.stopPropagation(), { passive: true });
 notifTaskBtn.addEventListener('touchstart',    e => e.stopPropagation(), { passive: true });
@@ -2298,8 +2439,18 @@ function runHeartbeat() {
 }
 
 function showHeartbeatNotice(text) {
-  showMsgDisplay(text, 7000);
+  hbNoticeText.textContent = text;
+  hbNotice.classList.add('visible');
+  clearTimeout(hbNoticeTimer);
+  hbNoticeTimer = setTimeout(() => hbNotice.classList.remove('visible'), 9000);
 }
+
+hbNoticeClose.addEventListener('click', () => {
+  hbNotice.classList.remove('visible');
+  clearTimeout(hbNoticeTimer);
+});
+hbNoticeClose.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+hbNotice.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 
 // ── Discovery status polling ──────────────────────────────────────
 // After agent mode activates, poll /api/discovery/status and update
