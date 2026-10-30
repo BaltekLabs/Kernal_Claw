@@ -1,13 +1,23 @@
 package com.balteklabs.voiceos
 
+import android.app.RemoteInput
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Log
 
 class VoiceOSNotificationService : NotificationListenerService() {
 
     companion object {
+        private const val TAG = "VoiceOSNotif"
         private val recent = ArrayDeque<Map<String, Any>>(50)
         private val lock = Any()
+
+        @Volatile
+        var instance: VoiceOSNotificationService? = null
+            private set
 
         /** Shared reference to the ContextStore for incremental indexing. Set by MainActivity. */
         var contextStore: ContextStore? = null
@@ -19,6 +29,69 @@ class VoiceOSNotificationService : NotificationListenerService() {
         fun dismiss(key: String) = synchronized(lock) {
             recent.removeAll { it["key"] == key }
         }
+
+        /** Cancel (dismiss) a notification from the status bar by its key. */
+        fun dismissNotification(key: String): Boolean {
+            return try {
+                instance?.cancelNotification(key)
+                dismiss(key)
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "dismiss failed: ${e.message}")
+                false
+            }
+        }
+
+        /**
+         * List action button titles available on an active notification.
+         * Returns empty list if the notification is no longer active.
+         */
+        fun getNotificationActions(key: String): List<String> {
+            val sbn = instance?.activeNotifications?.firstOrNull { it.key == key }
+                ?: return emptyList()
+            return sbn.notification.actions
+                ?.mapNotNull { it.title?.toString()?.trim()?.takeIf { t -> t.isNotBlank() } }
+                ?: emptyList()
+        }
+
+        /**
+         * Send an inline text reply to a notification via its RemoteInput action.
+         * Works with WhatsApp, Messages, Telegram, Gmail and any app that supports
+         * direct reply. Returns false when the notification has no free-form reply action.
+         */
+        fun replyToNotification(ctx: Context, key: String, replyText: String): Boolean {
+            return try {
+                val sbn = instance?.activeNotifications?.firstOrNull { it.key == key }
+                    ?: return false
+                val replyAction = sbn.notification.actions?.firstOrNull { action ->
+                    action.remoteInputs?.any { it.allowFreeFormInput } == true
+                } ?: return false
+                val remoteInput = replyAction.remoteInputs.first { it.allowFreeFormInput }
+                val intent = Intent()
+                RemoteInput.addResultsToIntent(
+                    replyAction.remoteInputs, intent,
+                    Bundle().apply { putCharSequence(remoteInput.resultKey, replyText) }
+                )
+                replyAction.actionIntent.send(ctx, 0, intent)
+                dismiss(key)  // remove from in-memory cache after reply
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "reply failed: ${e.message}")
+                false
+            }
+        }
+    }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        instance = this
+        Log.i(TAG, "Notification listener connected")
+    }
+
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        if (instance === this) instance = null
+        Log.i(TAG, "Notification listener disconnected")
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {

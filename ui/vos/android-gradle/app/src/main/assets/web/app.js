@@ -244,6 +244,7 @@ function showToolBadge(toolName) {
     log_interaction: '✅', get_relationship_health: '💚',
     suggest_social_outreach: '💌',
     run_shell: '⌨️', get_bridge_setup: '🔧',
+    dismiss_notification: '🗑️', get_notification_actions: '📋', reply_notification: '↩️',
     take_screenshot: '📸', get_screen_text: '📄', tap_screen: '👆',
     swipe_screen: '👆', type_text: '⌨️', long_press_screen: '🤏',
     press_back: '↩️', press_home: '🏠', get_foreground_app: '🪟',

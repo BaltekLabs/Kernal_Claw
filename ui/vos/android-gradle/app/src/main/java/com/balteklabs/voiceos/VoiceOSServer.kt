@@ -687,9 +687,24 @@ Start: introduce yourself in one sentence, then ask for their name."""
             "Get current device info: exact time, date, battery level, WiFi network.",
             emptyMap(), emptyList()),
         ToolDef("get_notifications",
-            "Read recent device notifications — messages, alerts, app notifications.",
+            "Read recent device notifications — messages, alerts, app notifications. Each result includes a [key:...] field needed by dismiss_notification, reply_notification, and get_notification_actions.",
             mapOf("limit" to mapOf("type" to "integer", "description" to "Max notifications to return (default 10)")),
             emptyList()),
+        ToolDef("dismiss_notification",
+            "Dismiss (clear) a notification from the status bar. Get the key from get_notifications.",
+            mapOf("key" to mapOf("type" to "string", "description" to "Notification key from get_notifications output")),
+            listOf("key")),
+        ToolDef("get_notification_actions",
+            "List the action buttons available on a notification (e.g. Reply, Mark as read, Archive). Get the key from get_notifications.",
+            mapOf("key" to mapOf("type" to "string", "description" to "Notification key from get_notifications output")),
+            listOf("key")),
+        ToolDef("reply_notification",
+            "Send an inline text reply to a messaging notification (WhatsApp, Messages, Telegram, Gmail, etc.). Get the key from get_notifications. The agent MUST call send_sms or draft_email instead if the notification is not from a messaging app.",
+            mapOf(
+                "key"   to mapOf("type" to "string", "description" to "Notification key from get_notifications output"),
+                "reply" to mapOf("type" to "string", "description" to "The reply text to send")
+            ),
+            listOf("key", "reply")),
         ToolDef("read_sms",
             "Read recent SMS messages from the inbox.",
             mapOf(
@@ -2047,6 +2062,7 @@ Focus on the user's communication needs.
                     "inbox_recap", "summarize_sms_thread",
                     "context_search", "get_pending_attention", "get_message_threads",
                     "read_sms", "get_recent_calls", "get_notifications",
+                    "dismiss_notification", "get_notification_actions", "reply_notification",
                     "call_contact", "send_sms", "draft_email", "send_whatsapp",
                     "remember", "recall", "get_device_info", "search_contacts"
                 ),
@@ -2824,7 +2840,10 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                 "get_battery"       -> toolGetBattery()
                 "get_volume"        -> toolGetVolume()
                 "get_device_info"   -> toolGetDeviceInfo()
-                "get_notifications" -> toolGetNotifications(args)
+                "get_notifications"        -> toolGetNotifications(args)
+                "dismiss_notification"     -> toolDismissNotification(args)
+                "get_notification_actions" -> toolGetNotificationActions(args)
+                "reply_notification"       -> toolReplyNotification(args)
                 "read_sms"          -> toolReadSms(args)
                 "get_recent_calls"  -> toolGetRecentCalls(args)
                 "recall"            -> toolRecall()
@@ -3008,13 +3027,51 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             val app   = n["app"] as? String ?: n["pkg"] as? String ?: "?"
             val title = n["title"] as? String ?: ""
             val text  = n["text"]  as? String ?: ""
+            val key   = n["key"]   as? String ?: ""
             val age   = System.currentTimeMillis() - (n["time"] as? Long ?: 0L)
             val ageStr = when {
                 age < 60_000    -> "just now"
                 age < 3_600_000 -> "${age / 60_000}m ago"
                 else            -> "${age / 3_600_000}h ago"
             }
-            "[$ageStr] $app${if (title.isNotBlank()) " \"$title\"" else ""}${if (text.isNotBlank()) ": $text" else ""}"
+            val keyHint = if (key.isNotBlank()) " [key:$key]" else ""
+            "[$ageStr] $app${if (title.isNotBlank()) " \"$title\"" else ""}${if (text.isNotBlank()) ": $text" else ""}$keyHint"
+        }
+    }
+
+    private fun toolDismissNotification(args: Map<String, Any>): String {
+        if (!isNotificationListenerEnabled())
+            return "Notification access not granted. Enable VoiceOS in Settings → Apps → Special app access → Notification access."
+        val key = args["key"] as? String ?: return "Missing: key (get it from get_notifications)"
+        return if (VoiceOSNotificationService.dismissNotification(key))
+            "Notification dismissed."
+        else
+            "Could not dismiss — notification may have already been cleared."
+    }
+
+    private fun toolGetNotificationActions(args: Map<String, Any>): String {
+        if (!isNotificationListenerEnabled())
+            return "Notification access not granted."
+        val key     = args["key"] as? String ?: return "Missing: key (get it from get_notifications)"
+        val actions = VoiceOSNotificationService.getNotificationActions(key)
+        return if (actions.isEmpty())
+            "No actions available for this notification (it may have been dismissed, or the app doesn't expose action buttons)."
+        else
+            "Available actions: ${actions.joinToString(", ")}"
+    }
+
+    private fun toolReplyNotification(args: Map<String, Any>): String {
+        if (!isNotificationListenerEnabled())
+            return "Notification access not granted. Enable VoiceOS in Settings → Apps → Special app access → Notification access."
+        val key   = args["key"]   as? String ?: return "Missing: key (get it from get_notifications)"
+        val reply = args["reply"] as? String ?: return "Missing: reply text"
+        return when {
+            VoiceOSNotificationService.replyToNotification(context, key, reply) ->
+                "Reply sent: \"${reply.take(60)}${if (reply.length > 60) "…" else ""}\""
+            VoiceOSNotificationService.getNotificationActions(key).isEmpty() ->
+                "Notification no longer active — it may have been dismissed already."
+            else ->
+                "This notification doesn't support inline reply. Use launch_app to open the app and reply manually."
         }
     }
 
