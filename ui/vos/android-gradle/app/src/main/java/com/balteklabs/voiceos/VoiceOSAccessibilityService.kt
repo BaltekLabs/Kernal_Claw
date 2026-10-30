@@ -44,6 +44,10 @@ class VoiceOSAccessibilityService : AccessibilityService() {
         var instance: VoiceOSAccessibilityService? = null
             private set
 
+        /** Base64 JPEG thumbnail (280px wide) of the most recent screenshot, for inline UI preview. */
+        @Volatile
+        var lastThumbBase64: String? = null
+
         fun isAvailable(): Boolean = instance != null
 
         /** Capture screen as base64 JPEG. Returns null if service unavailable or API < 30. */
@@ -145,6 +149,13 @@ class VoiceOSAccessibilityService : AccessibilityService() {
                         val bmp = hwBitmap.copy(Bitmap.Config.ARGB_8888, false)
                         hwBitmap.recycle()
 
+                        // Low-res thumbnail for inline UI preview
+                        val thumbBmp = scaleBitmap(bmp, 280)
+                        val thumbOut = ByteArrayOutputStream()
+                        thumbBmp.compress(Bitmap.CompressFormat.JPEG, 55, thumbOut)
+                        thumbBmp.recycle()
+                        lastThumbBase64 = Base64.encodeToString(thumbOut.toByteArray(), Base64.NO_WRAP)
+
                         val scaled = scaleBitmap(bmp, 1080)
                         bmp.recycle()
 
@@ -206,18 +217,33 @@ class VoiceOSAccessibilityService : AccessibilityService() {
 
     private fun performTypeText(text: String): Boolean {
         return try {
-            // Try to set text on the focused input node
             val root = rootInActiveWindow ?: return false
+            // Try input focus first, then accessibility focus as fallback
             val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
             root.recycle()
-            if (focused != null) {
-                val args = android.os.Bundle()
-                args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                val result = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            if (focused == null) return false
+
+            // Try ACTION_SET_TEXT first (works on most modern text fields)
+            val setArgs = android.os.Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            if (focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, setArgs)) {
                 focused.recycle()
-                result
-            } else {
-                // No focused input — use PASTE approach: set clipboard then paste
+                return true
+            }
+
+            // Fallback: set clipboard and paste (handles legacy inputs)
+            return try {
+                val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("voiceos_input", text))
+                val pasted = focused.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+                focused.recycle()
+                pasted
+            } catch (e2: Exception) {
+                Log.e(TAG, "clipboard paste fallback: ${e2.message}")
+                focused.recycle()
                 false
             }
         } catch (e: Exception) {

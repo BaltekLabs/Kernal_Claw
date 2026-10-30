@@ -244,6 +244,10 @@ function showToolBadge(toolName) {
     log_interaction: '✅', get_relationship_health: '💚',
     suggest_social_outreach: '💌',
     run_shell: '⌨️', get_bridge_setup: '🔧',
+    take_screenshot: '📸', get_screen_text: '📄', tap_screen: '👆',
+    swipe_screen: '👆', type_text: '⌨️', long_press_screen: '🤏',
+    press_back: '↩️', press_home: '🏠', get_foreground_app: '🪟',
+    pull_notification_shade: '📲', open_quick_settings: '⚙️',
   };
   badge.textContent = `${icons[toolName] || '⚙️'} ${toolName.replace(/_/g, ' ')}`;
   responseScroll.insertBefore(badge, responseText);
@@ -280,6 +284,14 @@ function appendResponseChunk(chunk) {
 
 // ── Lightweight markdown renderer ─────────────────────────────────
 function renderMarkdown(text) {
+  // Extract screenshot thumbnails before HTML-escaping (base64 contains +/= chars)
+  let thumbHtml = '';
+  const thumbMatch = text.match(/\[SCREENSHOT_THUMB:([A-Za-z0-9+/=\r\n]+)\]/);
+  if (thumbMatch) {
+    const b64 = thumbMatch[1].replace(/[\r\n]/g, '');
+    thumbHtml = `<img class="screenshot-thumb" src="data:image/jpeg;base64,${b64}" alt="screenshot" style="max-width:100%;border-radius:8px;margin:6px 0;display:block;box-shadow:0 2px 8px rgba(0,0,0,0.4);">`;
+    text = text.replace(/\[SCREENSHOT_THUMB:[A-Za-z0-9+/=\r\n]+\]/g, '');
+  }
   // Strip device snapshot blocks — model context, not user-facing
   text = text.replace(/╔═.*?╚═[^\n]*/gs, '').replace(/^\s*╠.*$/gm, '');
 
@@ -331,7 +343,7 @@ function renderMarkdown(text) {
   h = h.replace(/<p class="md-p">(<(?:ul|ol|pre|div|hr))/g, '$1');
   h = h.replace(/(>)<\/p>(\s*)<p class="md-p">(<(?:ul|ol|pre|div|hr))/g, '>$3');
 
-  return h;
+  return thumbHtml + h;
 }
 
 function prependBadge(skillName) {

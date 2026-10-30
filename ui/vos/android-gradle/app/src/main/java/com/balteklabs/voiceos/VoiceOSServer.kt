@@ -3799,6 +3799,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
         val y   = (args["y"] as? Double)?.toFloat() ?: return "Missing y"
         val dur = (args["duration_ms"] as? Double)?.toLong() ?: 800L
         val ok  = VoiceOSAccessibilityService.longPress(x, y, dur)
+        if (ok) Thread.sleep(600)
         return if (ok) "Long-pressed (${x.toInt()}, ${y.toInt()}) for ${dur}ms"
                else "Long press failed"
     }
@@ -4109,7 +4110,9 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             ?: return "Screenshot capture failed — service may need a moment. Try again."
 
         val (w, h) = VoiceOSAccessibilityService.getScreenSize()
-        return callVisionLlm(base64, buildVisionPrompt(w, h, query))
+        val description = callVisionLlm(base64, buildVisionPrompt(w, h, query))
+        val thumb = VoiceOSAccessibilityService.lastThumbBase64
+        return if (thumb != null) "$description\n[SCREENSHOT_THUMB:$thumb]" else description
     }
 
     private fun buildVisionPrompt(screenW: Int, screenH: Int, query: String?): String = buildString {
@@ -4249,6 +4252,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
         val x = (args["x"] as? Double)?.toFloat() ?: return "Missing x coordinate"
         val y = (args["y"] as? Double)?.toFloat() ?: return "Missing y coordinate"
         val ok = VoiceOSAccessibilityService.tap(x, y)
+        if (ok) Thread.sleep(800)
         return if (ok) "Tapped (${x.toInt()}, ${y.toInt()})" else "Tap failed — gesture was cancelled"
     }
 
@@ -4260,6 +4264,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
         val y2 = (args["y2"] as? Double)?.toFloat() ?: return "Missing y2"
         val dur = (args["duration_ms"] as? Double)?.toLong() ?: 300L
         val ok  = VoiceOSAccessibilityService.swipe(x1, y1, x2, y2, dur)
+        if (ok) Thread.sleep(600)
         return if (ok) "Swiped (${x1.toInt()},${y1.toInt()}) → (${x2.toInt()},${y2.toInt()})"
                else "Swipe failed"
     }
@@ -4401,6 +4406,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
         sb.appendLine("╔═ DEVICE SNAPSHOT ══════════════════════════════════════╗")
         sb.appendLine("  Time:    ${sdf.format(java.util.Date())}")
         try { sb.appendLine("  Device:  ${toolGetBattery()}") } catch (_: Exception) {}
+        if (VoiceOSAccessibilityService.isAvailable()) sb.appendLine("  Screen:  ready (take_screenshot, tap_screen, get_screen_text)")
         if (!minimal) {
             // WiFi
             try {
