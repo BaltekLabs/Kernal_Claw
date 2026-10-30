@@ -2290,7 +2290,9 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                 "ollama_url"      to ollamaUrl
             ))
 
-            uri == "/api/apps"     -> handleApps()
+            uri == "/api/apps"     -> handleApps(session)
+            uri == "/api/profiles" -> handleProfiles()
+            uri == "/api/profiles/work/resume" && session.method == Method.POST -> handleWorkResume()
             uri == "/api/launch"   && session.method == Method.POST -> handleLaunch(session)
             uri == "/api/provider" && session.method == Method.POST -> handleProvider(session)
             uri == "/api/keys"     && session.method == Method.POST -> handleSaveKey(session)
@@ -2409,7 +2411,21 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
     }
 
     // ── /api/apps ─────────────────────────────────────────────────
-    private fun handleApps(): Response {
+    private fun handleApps(session: IHTTPSession): Response {
+        // ?profile=work → apps from the managed (work) profile, via LauncherApps.
+        if (session.parms["profile"] == "work") {
+            val user = workProfile()
+                ?: return jsonResponse(emptyList<Any>())
+            val apps = launcherApps().getActivityList(null, user)
+                .sortedBy { it.label.toString().lowercase() }
+                .map { info -> mapOf(
+                    "package" to info.componentName.packageName,
+                    "name"    to info.label.toString(),
+                    "icon"    to encodeIcon(info.getIcon(0)),
+                    "profile" to "work"
+                )}
+            return jsonResponse(apps)
+        }
         val pm = context.packageManager
         val intent = Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
         val apps = pm.queryIntentActivities(intent, PackageManager.GET_META_DATA)
@@ -2422,23 +2438,80 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
         return jsonResponse(apps)
     }
 
-    private fun encodeIcon(pm: PackageManager, info: android.content.pm.ResolveInfo): String? {
+    // ── Work profile ──────────────────────────────────────────────
+    private fun launcherApps() =
+        context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as android.content.pm.LauncherApps
+
+    private fun userManager() =
+        context.getSystemService(Context.USER_SERVICE) as android.os.UserManager
+
+    /** The first profile on this device that isn't ours — i.e. the work profile. */
+    private fun workProfile(): android.os.UserHandle? =
+        userManager().userProfiles.firstOrNull { it != android.os.Process.myUserHandle() }
+
+    private fun workPaused(user: android.os.UserHandle): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && userManager().isQuietModeEnabled(user)
+
+    // GET /api/profiles → { has_work, work_paused }
+    private fun handleProfiles(): Response {
+        val user = workProfile()
+        return jsonResponse(mapOf(
+            "has_work"    to (user != null),
+            "work_paused" to (user != null && workPaused(user))
+        ))
+    }
+
+    // POST /api/profiles/work/resume → turn the work profile back on (if paused)
+    private fun handleWorkResume(): Response {
+        val user = workProfile()
+            ?: return jsonResponse(mapOf("error" to "no work profile"), Status.NOT_FOUND)
         return try {
-            val drawable = info.loadIcon(pm)
-            val w = if (drawable.intrinsicWidth  > 0) drawable.intrinsicWidth  else 48
-            val h = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 48
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            drawable.setBounds(0, 0, w, h); drawable.draw(Canvas(bmp))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                userManager().requestQuietModeEnabled(false, user)
+            }
+            jsonResponse(mapOf("ok" to true, "work_paused" to workPaused(user)))
+        } catch (e: Exception) {
+            jsonResponse(mapOf("error" to (e.message ?: "failed")), Status.INTERNAL_ERROR)
+        }
+    }
+
+    private fun encodeIcon(pm: PackageManager, info: android.content.pm.ResolveInfo): String? =
+        try { encodeIcon(info.loadIcon(pm)) } catch (_: Exception) { null }
+
+    private fun encodeIcon(drawable: android.graphics.drawable.Drawable): String? {
+        return try {
+            // Cap at 64 × 64 and use JPEG to keep /api/apps payload small.
+            // White background handles transparent icons cleanly for JPEG.
+            val size = 64
+            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            canvas.drawColor(android.graphics.Color.WHITE)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
             val bos = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.PNG, 85, bos)
+            bmp.compress(Bitmap.CompressFormat.JPEG, 75, bos)
             Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
         } catch (_: Exception) { null }
     }
 
     // ── /api/launch ───────────────────────────────────────────────
     private fun handleLaunch(session: IHTTPSession): Response {
-        val pkg = parseBody(session)["package"] as? String
+        val body = parseBody(session)
+        val pkg = body["package"] as? String
             ?: return jsonResponse(mapOf("error" to "missing package"), Status.BAD_REQUEST)
+        if (body["profile"] == "work") {
+            val user = workProfile()
+                ?: return jsonResponse(mapOf("error" to "no work profile"), Status.NOT_FOUND)
+            return try {
+                val la = launcherApps()
+                val info = la.getActivityList(pkg, user).firstOrNull()
+                    ?: return jsonResponse(mapOf("error" to "not found"), Status.NOT_FOUND)
+                la.startMainActivity(info.componentName, user, null, null)
+                jsonResponse(mapOf("ok" to true))
+            } catch (e: Exception) {
+                jsonResponse(mapOf("error" to (e.message ?: "failed")), Status.INTERNAL_ERROR)
+            }
+        }
         return try {
             val i = context.packageManager.getLaunchIntentForPackage(pkg)
                 ?: return jsonResponse(mapOf("error" to "not found"), Status.NOT_FOUND)

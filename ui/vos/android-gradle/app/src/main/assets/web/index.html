@@ -31,7 +31,7 @@
   </div>
 
   <!-- Swipe hint -->
-  <div id="hint">swipe up for apps · swipe right for menu · swipe left for people</div>
+  <div id="hint">tap or type to speak · swipe up for apps · swipe right for history · swipe down for work</div>
 
   <!-- Bottom-half message display (feedback / heartbeat notices) -->
   <div id="msg-display" aria-live="polite">
@@ -222,6 +222,32 @@
   </div>
 
   <!-- ── People / Social CRM panel (swipe left from home) ─────── -->
+  <!-- Work desk: retro workstation for work-profile apps (swipe down to enter) -->
+  <div id="work-desk" role="dialog" aria-label="Work desk">
+    <div class="wd-top">
+      <span class="wd-brand">BALTEK&nbsp;·&nbsp;WORKSTATION</span>
+      <div class="wd-switch" id="wd-switch" aria-label="Slide left for personal">
+        <span class="wd-switch-hint">◀ PERSONAL</span>
+        <div class="wd-knob" id="wd-knob">WORK</div>
+      </div>
+    </div>
+    <div class="wd-monitor">
+      <div class="wd-screen" id="wd-screen">
+        <div class="wd-statusline"><span>C:\WORK</span><span id="wd-clock"></span></div>
+        <div class="wd-log" id="wd-log"></div>
+      </div>
+    </div>
+    <div class="wd-case">
+      <div class="wd-drive" id="wd-drive">
+        <span class="wd-led"></span>
+        <div class="wd-slot"></div>
+        <span class="wd-drive-label">DRIVE A:</span>
+      </div>
+      <div class="wd-vents"></div>
+    </div>
+    <div class="wd-rack" id="wd-rack"></div>
+  </div>
+
   <div id="people-panel" role="dialog" aria-label="People">
 
     <div id="people-header">
@@ -293,6 +319,8 @@
     </div>
   </div>
 
+  <!-- Page is served by NanoHTTPD at http://127.0.0.1:8741 (same-origin).
+       ES modules work from HTTP origins. No interceptor or CORS hacks needed. -->
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

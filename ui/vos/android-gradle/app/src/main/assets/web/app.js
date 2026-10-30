@@ -15,6 +15,7 @@
  */
 
 import { Circle, CircleState } from './circle.js';
+import { initWorkDesk, wantsWorkDesk } from './work.js';
 
 // ── DOM refs ────────────────────────────────────────────────────
 const canvas          = document.getElementById('canvas');
@@ -536,14 +537,26 @@ function renderSuggestions(items) {
       : '';
 
     el.innerHTML = `
-      <div class="si-icon">${item.icon ? `<img src="data:image/png;base64,${item.icon}" alt="">` : '<span>📱</span>'}</div>
+      <div class="si-icon">${item.icon ? `<img src="data:image/jpeg;base64,${item.icon}" alt="">` : '<span>📱</span>'}</div>
       <div class="si-body">
         <div class="si-label">${escHtml(item.label)}</div>
         ${subHtml}
       </div>
       <span class="si-action">${item.action}</span>`;
-    el.addEventListener('click', item.onClick);
-    el.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+    // Act on touchend rather than click — WebView drops the click when the gesture
+    // engine re-renders underneath it. Reject touches that moved (scrolls/swipes).
+    let sx = 0, sy = 0, fired = false;
+    el.addEventListener('touchstart', e => {
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; fired = false;
+    }, { passive: true });
+    el.addEventListener('touchend', e => {
+      const t = e.changedTouches[0];
+      if (Math.abs(t.clientX - sx) < 24 && Math.abs(t.clientY - sy) < 24) {
+        fired = true;
+        item.onClick();
+      }
+    }, { passive: true });
+    el.addEventListener('click', () => { if (!fired) item.onClick(); fired = false; });
     suggestionsEl.appendChild(el);
 
     // Stagger animation
@@ -552,19 +565,40 @@ function renderSuggestions(items) {
   suggestionsEl.classList.add('visible');
 }
 
+// The suggestion list is a no-swipe zone: keep its touches away from the gesture engine.
+suggestionsEl.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+suggestionsEl.addEventListener('touchend',   e => e.stopPropagation(), { passive: true });
+
 function hideSuggestions() {
   suggestionsEl.classList.remove('visible');
   suggestionsEl.innerHTML = '';
 }
 
 // ── Status bar ──────────────────────────────────────────────────
+// Retry with backoff — the NanoHTTPD server can take a few hundred ms to bind,
+// especially on slower devices like the KEYone. Without retry, a single failed
+// fetch leaves the UI stuck at "Initializing…" and all API calls dead.
 async function loadStatus() {
-  try {
-    const data = await fetch('/api/status').then(r => r.json());
-    updateStatusBar(data);
-    if (data.ollama_url) ollamaUrlInput.value = data.ollama_url;
-    if (data.active_model || data.model) ollamaModelInput.value = data.active_model || data.model;
-  } catch { /* backend not ready yet */ }
+  const delays = [400, 800, 1200, 1600, 2000, 2500, 3000, 4000];
+  for (let i = 0; i <= delays.length; i++) {
+    try {
+      const data = await fetch('/api/status').then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      });
+      updateStatusBar(data);
+      if (data.ollama_url) ollamaUrlInput.value = data.ollama_url;
+      if (data.active_model || data.model) ollamaModelInput.value = data.active_model || data.model;
+      return; // success — stop retrying
+    } catch {
+      if (i < delays.length) {
+        statusBar.textContent = 'connecting…';
+        await new Promise(r => setTimeout(r, delays[i]));
+      } else {
+        statusBar.textContent = 'server offline';
+      }
+    }
+  }
 }
 
 function updateStatusBar(data) {
@@ -591,6 +625,9 @@ const peopleClose  = document.getElementById('people-close');
 const peopleList   = document.getElementById('people-list');
 const peopleEmpty  = document.getElementById('people-empty');
 
+// Work desk — separate environment for work-profile apps (see work.js)
+const workDesk = initWorkDesk({ post, escHtml, onExit: () => closePanel('work') });
+
 const PANELS = {
   input:    inputPanel,
   response: responsePanel,
@@ -599,6 +636,7 @@ const PANELS = {
   history:  historyPanel,
   queue:    queuePanel,
   people:   peoplePanel,
+  work:     workDesk.element,
 };
 
 function showPanel(name) {
@@ -617,11 +655,13 @@ function showPanel(name) {
     chatInput.blur();
   }
   if (name === 'drawer') loadApps();
+  if (name === 'work') workDesk.open();
   if (name !== 'input') hideSuggestions();
 }
 
 function closePanel(name, resetActive = true) {
   PANELS[name]?.classList.remove('visible');
+  if (name === 'work') workDesk.close();
   if (name === 'input') {
     inputDisplay.classList.remove('visible');
     inputDisplay.classList.remove('voice-mode');
@@ -638,7 +678,7 @@ function closePanel(name, resetActive = true) {
 }
 
 function closeAllPanels() {
-  ['input', 'settings', 'drawer', 'history', 'queue', 'people'].forEach(k => closePanel(k, false));
+  ['input', 'settings', 'drawer', 'history', 'queue', 'people', 'work'].forEach(k => closePanel(k, false));
   hideSuggestions();
   activePanel = currentResponse ? 'response' : null;
   if (!isProcessing) setCircleState(CircleState.IDLE);
@@ -663,12 +703,28 @@ function renderApps(apps) {
   apps.forEach(app => {
     const el = document.createElement('div');
     el.className = 'app-icon';
+    // Icons are now JPEG-encoded (not PNG) — use correct MIME type
     el.innerHTML = `
       <div class="app-icon-img">
-        ${app.icon ? `<img src="data:image/png;base64,${app.icon}" alt="">` : '📱'}
+        ${app.icon ? `<img src="data:image/jpeg;base64,${app.icon}" alt="">` : '📱'}
       </div>
       <span class="app-icon-label">${escHtml(app.name)}</span>`;
-    el.addEventListener('click', () => launchApp(app.package));
+    // Use touchstart/touchend instead of click — older Android WebViews can be
+    // unreliable generating click events inside a scrollable container with
+    // touch-action:none on the body. Track start position to reject scroll-taps.
+    let tapStartX = 0, tapStartY = 0;
+    el.addEventListener('touchstart', (e) => {
+      e.stopPropagation();   // prevent gesture engine from processing this touch
+      tapStartX = e.touches[0].clientX;
+      tapStartY = e.touches[0].clientY;
+    }, { passive: true });
+    el.addEventListener('touchend', (e) => {
+      e.stopPropagation();
+      const t = e.changedTouches[0];
+      if (Math.abs(t.clientX - tapStartX) < 20 && Math.abs(t.clientY - tapStartY) < 20) {
+        launchApp(app.package);
+      }
+    }, { passive: true });
     appGrid.appendChild(el);
   });
 }
@@ -1370,21 +1426,33 @@ async function submitInput() {
 // ── Gesture engine ──────────────────────────────────────────────
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
 let longPressTimer = null;
+let touchStartedInScrollable = false;  // tracks whether the gesture began inside a scrollable panel
 const SWIPE_MIN     = 60;
 const SWIPE_MAX_PERP = 80;
 const LONG_PRESS_MS  = 500;
 
 function isScrollableTarget(el) {
-  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl, peoplePanel, taskOverlay];
+  const panels = [inputPanel, responseScroll, appDrawer, historyPanel, suggestionsEl, peoplePanel, taskOverlay, workDesk.element];
   return panels.some(p => p && p.contains(el));
 }
 
+// True only between a touchstart and touchend that both reached the document.
+// Many controls stop touchstart propagation but not touchend; without this the
+// engine would measure their touchend against a stale start point and fire a
+// phantom swipe/tap (e.g. closing the input panel instead of opening an app).
+let touchTracked = false;
+
 document.addEventListener('touchstart', (e) => {
-  if (isScrollableTarget(e.target)) return;
+  touchTracked = true;
+  // Always capture start position — if we skip this when the touch begins inside a
+  // scrollable panel, touchend computes deltas from (0,0) and fires phantom swipes.
   const t = e.touches[0];
   touchStartX = t.clientX; touchStartY = t.clientY;
   touchStartTime = Date.now();
-  longPressTimer = setTimeout(() => onLongPress(touchStartX, touchStartY), LONG_PRESS_MS);
+  touchStartedInScrollable = isScrollableTarget(e.target);
+  if (!touchStartedInScrollable) {
+    longPressTimer = setTimeout(() => onLongPress(touchStartX, touchStartY), LONG_PRESS_MS);
+  }
 }, { passive: true });
 
 document.addEventListener('touchmove', (e) => {
@@ -1398,7 +1466,10 @@ document.addEventListener('touchmove', (e) => {
 
 document.addEventListener('touchend', (e) => {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-  if (isScrollableTarget(e.target)) return;
+  if (!touchTracked) return;   // this touch started on a control that opted out
+  touchTracked = false;
+  // Suppress gesture dispatch when the touch originated inside a scrollable panel
+  if (touchStartedInScrollable) return;
 
   const t   = e.changedTouches[0];
   const dx  = t.clientX - touchStartX;
@@ -1451,8 +1522,10 @@ function onSwipeUp() {
 }
 
 function onSwipeDown() {
-  if (activePanel) { closeAllPanels(); return; }
-  // No panel open — swipe-down does nothing (settings are in left panel)
+  if (activePanel && activePanel !== 'response') { closeAllPanels(); return; }
+  // Nothing open — swipe down to drop into the work desk
+  closeAllPanels();
+  showPanel('work');
 }
 
 function onSwipeLeft()  {
@@ -1474,7 +1547,20 @@ function onLongPress() { showPanel('history'); }
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeAllPanels(); return; }
   if (!activePanel && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
-    showPanel('input'); chatInput.value += e.key;
+    // Physical keyboard: open panel immediately in keyboard mode (not voice mode)
+    // so the user sees their typed character right away.
+    showPanel('input');
+    showInputKeyboardMode(true);
+    chatInput.value += e.key;
+    refreshInputDisplay();
+    updateBottomBar();
+  } else if (activePanel === 'input' && inputMode !== 'keyboard' &&
+             e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+    // Panel already open in voice mode — physical key press switches to text mode
+    showInputKeyboardMode(true);
+    chatInput.value += e.key;
+    refreshInputDisplay();
+    updateBottomBar();
   }
 });
 
@@ -2368,11 +2454,143 @@ bridgeSetupBtn?.addEventListener('click', async () => {
 bridgeSetupBtn?.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 bridgeInstructions?.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
 
+// ── First-run welcome / setup ────────────────────────────────────
+function showWelcomeScreen() {
+  const overlay = document.createElement('div');
+  overlay.id = 'welcome-overlay';
+  overlay.innerHTML = `
+    <div class="welcome-card">
+      <div class="welcome-logo">⬡</div>
+      <h1 class="welcome-title">VoiceOS</h1>
+      <p class="welcome-sub">by Baltek Labs</p>
+      <p class="welcome-desc">Your AI-powered launcher. Talk to your phone, launch apps, and get things done.</p>
+
+      <div class="welcome-section">
+        <div class="welcome-label">Choose AI Provider</div>
+        <div class="welcome-providers">
+          <button class="wp-btn active" data-p="ollama">Ollama<br><span>Local · free</span></button>
+          <button class="wp-btn" data-p="anthropic">Claude<br><span>API key needed</span></button>
+          <button class="wp-btn" data-p="openai">OpenAI<br><span>API key needed</span></button>
+          <button class="wp-btn" data-p="groq">Groq<br><span>API key needed</span></button>
+        </div>
+      </div>
+
+      <div class="welcome-section" id="welcome-key-section" style="display:none">
+        <div class="welcome-label">API Key</div>
+        <input id="welcome-key-input" type="password" placeholder="Paste your API key…"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      </div>
+
+      <div class="welcome-section" id="welcome-ollama-section">
+        <div class="welcome-label">Ollama URL</div>
+        <input id="welcome-ollama-url" type="url" value="http://127.0.0.1:11434"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <div class="welcome-hint">Run Ollama on this device or a PC on the same Wi-Fi</div>
+      </div>
+
+      <button id="welcome-start-btn" class="welcome-start">Get Started →</button>
+      <button id="welcome-skip-btn" class="welcome-skip">Skip for now</button>
+    </div>
+  `;
+
+  // Inline styles — self-contained, no external CSS needed
+  const style = document.createElement('style');
+  style.textContent = `
+    #welcome-overlay {
+      position: fixed; inset: 0; background: #000; z-index: 200;
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      padding: 20px;
+    }
+    .welcome-card {
+      background: #0a0f1a; border: 1px solid rgba(0,150,255,0.25);
+      border-radius: 24px; padding: 32px 24px; max-width: 380px; width: 100%;
+      text-align: center;
+    }
+    .welcome-logo { font-size: 48px; margin-bottom: 8px; color: #0096ff; }
+    .welcome-title { font-size: 28px; font-weight: 700; color: #fff; margin: 0; }
+    .welcome-sub { font-size: 12px; color: rgba(255,255,255,0.4); margin: 4px 0 16px; letter-spacing:.1em; text-transform:uppercase; }
+    .welcome-desc { font-size: 14px; color: rgba(255,255,255,0.65); line-height:1.6; margin-bottom: 24px; }
+    .welcome-section { margin-bottom: 20px; text-align: left; }
+    .welcome-label { font-size: 11px; letter-spacing:.08em; text-transform:uppercase; color:rgba(0,150,255,0.8); margin-bottom: 10px; }
+    .welcome-providers { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .wp-btn {
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px; color: #fff; padding: 12px 8px; cursor: pointer;
+      font-size: 14px; font-weight: 600; line-height: 1.4; transition: all .2s;
+    }
+    .wp-btn span { font-size: 11px; color: rgba(255,255,255,0.45); font-weight: 400; }
+    .wp-btn.active { background: rgba(0,150,255,0.15); border-color: rgba(0,150,255,0.5); }
+    #welcome-key-input, #welcome-ollama-url {
+      width: 100%; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 12px; color: #fff; padding: 12px 16px; font-size: 14px; outline: none;
+      box-sizing: border-box;
+    }
+    .welcome-hint { font-size: 11px; color: rgba(255,255,255,0.35); margin-top: 6px; }
+    .welcome-start {
+      width: 100%; background: #0096ff; border: none; border-radius: 14px; color: #fff;
+      padding: 16px; font-size: 16px; font-weight: 600; cursor: pointer; margin-bottom: 10px;
+    }
+    .welcome-skip {
+      background: none; border: none; color: rgba(255,255,255,0.35); font-size: 13px;
+      cursor: pointer; padding: 4px;
+    }
+  `;
+  document.head.appendChild(style);
+  document.body.appendChild(overlay);
+
+  let selectedProvider = 'ollama';
+
+  // Provider selection
+  overlay.querySelectorAll('.wp-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      overlay.querySelectorAll('.wp-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedProvider = btn.dataset.p;
+      const needKey = selectedProvider !== 'ollama';
+      document.getElementById('welcome-key-section').style.display = needKey ? '' : 'none';
+      document.getElementById('welcome-ollama-section').style.display = needKey ? 'none' : '';
+    });
+  });
+
+  // Get Started
+  document.getElementById('welcome-start-btn').addEventListener('click', async () => {
+    const key = document.getElementById('welcome-key-input')?.value?.trim() || '';
+    const ollamaUrl = document.getElementById('welcome-ollama-url')?.value?.trim() || '';
+    try {
+      await post('/api/provider', { provider: selectedProvider, ollama_url: ollamaUrl || undefined });
+      if (key) await post('/api/keys', { provider: selectedProvider, key });
+    } catch { /* server might still be starting; JS retry handles it */ }
+    overlay.remove();
+    style.remove();
+  });
+
+  // Skip
+  document.getElementById('welcome-skip-btn').addEventListener('click', () => {
+    overlay.remove();
+    style.remove();
+  });
+
+  // Prevent gesture engine from seeing touches inside the overlay
+  overlay.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+  overlay.addEventListener('touchend',   e => e.stopPropagation(), { passive: true });
+}
+
 // ── Boot ────────────────────────────────────────────────────────
 async function boot() {
   initCanvas();
   requestAnimationFrame(frame);
   await loadStatus();
+
+  // Show welcome screen on first run (localStorage flag not yet set)
+  if (!localStorage.getItem('voiceos_welcomed')) {
+    localStorage.setItem('voiceos_welcomed', '1');
+    showWelcomeScreen();
+  } else if (wantsWorkDesk()) {
+    // Left in work mode last time — come back to the work desk
+    showPanel('work');
+  }
+
   // Pre-load apps and tasks in background
   fetch('/api/apps').then(r => r.json()).then(apps => { allApps = apps; appsLoadedAt = Date.now(); }).catch(() => {});
   await loadTaskCache();
