@@ -2569,6 +2569,10 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             // If local handler couldn't answer, fall through to FAST tier
         }
 
+        // Pre-fetch ContextStore results for this query so the agent can answer
+        // immediately without an extra tool-call round-trip.
+        val queryCtx = try { buildQueryContext(userMsg) } catch (_: Exception) { "" }
+
         val pipeOut = PipedOutputStream()
         val pipeIn  = PipedInputStream(pipeOut, 65536)
 
@@ -2581,7 +2585,10 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                     // Agent mode: full context so probes and autonomous checks have device state.
                     val isAgentMode = (map["mode"] as? String) == "agent"
                     val minimal = !isAgentMode || activeProvider == "ollama"
-                    val liveCtx = try { buildLiveContext(minimal = minimal) } catch (_: Exception) { "" }
+                    val liveCtx = buildString {
+                        try { append(buildLiveContext(minimal = minimal)) } catch (_: Exception) {}
+                        if (queryCtx.isNotBlank()) { appendLine(); appendLine(); append(queryCtx) }
+                    }
                     engine.run(
                         userMsg     = userMsg,
                         liveCtx     = liveCtx,
@@ -4384,7 +4391,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
 
 ## Capabilities
 - Device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, screen automation.
-- Context index: use context_search / get_pending_attention / get_message_threads FIRST for questions about people, messages, or upcoming events.
+- Context index: If a "RELEVANT CONTEXT" block appears in the snapshot above, use it directly — it was pre-fetched for this exact query. For deeper search or when that block is absent, call context_search / get_pending_attention / get_message_threads.
 - Social layer: get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, suggest_social_outreach.
 - Shell (if Termux): run_shell for git, scripts, files. Read-only runs immediately; mutations queue for approval.
 - Screen: get_screen_text (fast) or take_screenshot (vision + coordinates) → tap_screen / swipe_screen.
@@ -4398,6 +4405,48 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
 - **Messages & inbox:** When the user asks about messages, SMS, inbox, what they missed, or wants a recap — ALWAYS call inbox_recap or read_sms. Do not answer from the device snapshot; it may be stale. For a specific person: call read_sms(contact="name") or summarize_sms_thread(contact="name").
 - **Daily events / schedule:** When asked about today's schedule, calendar, or events — call read_calendar(days=1). Do not guess from snapshot.
 - **Morning / daily briefing:** Call morning_briefing when user says "good morning", "brief me", "plan my day", or asks for a daily summary.$profile$ctx$skill"""
+    }
+
+    /**
+     * Search ContextStore with terms extracted from the user's query and return a
+     * compact "RELEVANT CONTEXT" block for injection into the system prompt.
+     * Returns blank when the query is too short, or no results pass the relevance filter.
+     */
+    private fun buildQueryContext(query: String): String {
+        if (query.length < 8) return ""
+        val stopWords = setOf(
+            "the","a","an","is","are","was","were","i","me","my","we","our","you","your",
+            "he","she","it","they","their","what","when","where","who","how","can","do",
+            "did","does","have","has","had","will","would","could","should","be","been",
+            "about","that","this","these","those","and","but","or","so","get","for","of",
+            "to","in","at","on","with","from","by","just","any","some","more","than","then"
+        )
+        val terms = query.lowercase()
+            .split(Regex("\\s+"))
+            .map { it.replace(Regex("[^a-z0-9']"), "") }
+            .filter { it.length > 2 && it !in stopWords }
+            .distinct()
+            .take(6)
+        if (terms.isEmpty()) return ""
+
+        val searchQuery = terms.joinToString(" ")
+        val cutoff48h   = System.currentTimeMillis() - 48 * 3_600_000L
+        val results     = contextStore.search(searchQuery, limit = 6)
+            .filter { it.weight >= 1.5 || it.timestamp >= cutoff48h }
+            .take(4)
+        if (results.isEmpty()) return ""
+
+        val sdf = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+        return buildString {
+            appendLine("╔═ RELEVANT CONTEXT (pre-fetched for this query) ════════╗")
+            results.forEach { doc ->
+                val time    = sdf.format(java.util.Date(doc.timestamp))
+                val snippet = doc.body.replace('\n', ' ').take(140)
+                appendLine("  [${doc.type.uppercase()}] ${doc.title} — $time")
+                if (snippet.isNotBlank()) appendLine("    $snippet")
+            }
+            append("╚════════════════════════════════════════════════════════╝")
+        }
     }
 
     private fun buildLiveContext(minimal: Boolean = false): String {
