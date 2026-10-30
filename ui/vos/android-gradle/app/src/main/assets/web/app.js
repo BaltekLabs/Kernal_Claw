@@ -2346,8 +2346,16 @@ async function checkBridgeStatus() {
   try {
     const data = await fetch('/api/bridge/status').then(r => r.json());
     if (bridgeStatusEl) {
-      bridgeStatusEl.textContent = data.ready ? 'dir ready' : 'not ready';
-      bridgeStatusEl.style.color = data.ready ? 'var(--accent)' : 'rgba(255,255,255,0.4)';
+      if (data.alive) {
+        bridgeStatusEl.textContent = 'running';
+        bridgeStatusEl.style.color = 'var(--accent)';
+      } else if (data.ready) {
+        bridgeStatusEl.textContent = 'stopped';
+        bridgeStatusEl.style.color = 'rgba(255,200,0,0.8)';
+      } else {
+        bridgeStatusEl.textContent = 'not ready';
+        bridgeStatusEl.style.color = 'rgba(255,255,255,0.4)';
+      }
     }
   } catch { if (bridgeStatusEl) bridgeStatusEl.textContent = 'unavailable'; }
 }

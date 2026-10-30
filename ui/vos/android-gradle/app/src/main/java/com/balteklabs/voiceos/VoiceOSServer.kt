@@ -225,10 +225,20 @@ class VoiceOSServer(
     private val BRIDGE_READ_TIMEOUT_MS  = 30_000L
     /** Long timeout for write operations (git clone, npm install, pip install…). */
     private val BRIDGE_WRITE_TIMEOUT_MS = 180_000L
+    /** Prevents two run_shell calls from clobbering each other's cmd.txt. */
+    private val bridgeSemaphore = java.util.concurrent.Semaphore(1)
 
     private fun isBridgeReady(): Boolean = try {
         if (!bridgeDir.exists()) bridgeDir.mkdirs()
         bridgeDir.exists() && bridgeDir.canWrite()
+    } catch (_: Exception) { false }
+
+    /** True if the daemon wrote a heartbeat.txt within the last 15 seconds. */
+    private fun isBridgeAlive(): Boolean = try {
+        val hb = java.io.File(bridgeDir, "heartbeat.txt")
+        if (!hb.exists()) return false
+        val tsSec = hb.readText().trim().toLongOrNull() ?: return false
+        System.currentTimeMillis() / 1000 - tsSec < 15
     } catch (_: Exception) { false }
 
     /** True for commands that are clearly read-only — used to pick timeout, not to gate execution. */
@@ -249,27 +259,28 @@ class VoiceOSServer(
 
     /**
      * Write command to bridge dir, block until Termux daemon writes result, return output.
-     * [timeoutMs] is chosen by the caller based on expected duration.
-     * Returns a structured result string including exit code on failure.
+     * Uses a semaphore to prevent concurrent commands from clobbering each other.
+     * Checks heartbeat mid-wait to detect daemon death without waiting for the full timeout.
      */
     private fun executeBridgeCommand(cmd: String, workdir: String, timeoutMs: Long = BRIDGE_READ_TIMEOUT_MS): String {
+        if (!bridgeSemaphore.tryAcquire(10_000, java.util.concurrent.TimeUnit.MILLISECONDS))
+            return "Bridge busy — another command is running. Retry in a moment."
         return try {
             if (!isBridgeReady())
-                return "Bridge dir not accessible. Ensure termux-setup-storage has been run and the VoiceOS bridge daemon is running in Termux."
+                return "Bridge dir not accessible. Run termux-setup-storage in Termux first, then start the daemon (see get_bridge_setup)."
+            if (!isBridgeAlive())
+                return "Bridge daemon not running. In Termux: nohup bash ~/voiceos-bridge.sh > ~/voiceos-bridge.log 2>&1 &\nOr: bash ~/voiceos-bridge.sh"
+
             val cmdFile    = java.io.File(bridgeDir, "cmd.txt")
             val wdirFile   = java.io.File(bridgeDir, "workdir.txt")
             val doneFile   = java.io.File(bridgeDir, "done")
             val resultFile = java.io.File(bridgeDir, "result.txt")
             val exitFile   = java.io.File(bridgeDir, "exit_code.txt")
 
-            // Clear previous result sentinel
             doneFile.delete(); resultFile.delete(); exitFile.delete()
-
-            // Issue the command
             wdirFile.writeText(workdir.ifBlank { "~" })
             cmdFile.writeText(cmd)
 
-            // Wait for daemon to signal completion
             val deadline = System.currentTimeMillis() + timeoutMs
             while (System.currentTimeMillis() < deadline) {
                 if (doneFile.exists()) {
@@ -279,10 +290,17 @@ class VoiceOSServer(
                     return if (code == 0) out.ifBlank { "(command completed, no output)" }
                            else "[exit $code]\n${out.ifBlank { "(no output)" }}"
                 }
-                Thread.sleep(500)
+                // Detect daemon death mid-command (heartbeat went stale)
+                if (!isBridgeAlive()) {
+                    cmdFile.delete()
+                    return "Bridge daemon stopped while running command. Restart in Termux: bash ~/voiceos-bridge.sh"
+                }
+                Thread.sleep(300)
             }
-            "Timeout (${timeoutMs / 1000}s) waiting for bridge result. Bridge daemon may have stopped — restart it in Termux."
+            cmdFile.delete()
+            "Timeout (${timeoutMs / 1000}s) — command may still be running in Termux. Check ~/voiceos-bridge.log for output."
         } catch (e: Exception) { "Bridge error: ${e.message}" }
+        finally { bridgeSemaphore.release() }
     }
 
     /**
@@ -366,20 +384,33 @@ class VoiceOSServer(
 
     private fun toolGetBridgeSetup(): String {
         val dirPath = try { bridgeDir.absolutePath } catch (_: Exception) { "/sdcard/voiceos_bridge" }
+        val ready = isBridgeReady()
+        val alive = ready && isBridgeAlive()
+        val status = when {
+            alive -> "RUNNING (heartbeat active) — run_shell is ready"
+            ready -> "STOPPED — directory exists but daemon is not running"
+            else  -> "NOT READY — run termux-setup-storage in Termux first"
+        }
+        val nextStep = when {
+            alive -> ""
+            ready -> "\nTo restart: nohup bash ~/voiceos-bridge.sh > ~/voiceos-bridge.log 2>&1 &"
+            else  -> "\nNext: open Termux → termux-setup-storage → follow steps below"
+        }
         return """Termux Bridge Setup
 ===================
-1. Open Termux and run: termux-setup-storage
-2. Run: curl http://localhost:8741/api/bridge/setup > ~/voiceos-bridge.sh
-   (while VoiceOS is open and the server is running)
-3. Start daemon: bash ~/voiceos-bridge.sh
-   Or background: nohup bash ~/voiceos-bridge.sh > ~/voiceos-bridge.log 2>&1 &
-
+Status: $status$nextStep
 Bridge dir: $dirPath
-Status: ${if (isBridgeReady()) "directory accessible" else "not accessible — run termux-setup-storage first"}
 
-Once running, use run_shell to execute commands from VoiceOS.
-Read-only commands (ls, git status, cat…) run immediately.
-Mutation commands (git commit, rm, pip install…) are queued for your approval."""
+Setup steps (first time only):
+1. Open Termux and run: termux-setup-storage
+2. Download the daemon script:
+   curl http://localhost:8741/api/bridge/setup > ~/voiceos-bridge.sh
+3. Start it (foreground):
+   bash ~/voiceos-bridge.sh
+   Or in the background (recommended):
+   nohup bash ~/voiceos-bridge.sh > ~/voiceos-bridge.log 2>&1 &
+
+Once running, use run_shell(command, workdir) to execute anything from VoiceOS."""
     }
 
     // ── Onboarding conversation context (separate from main agent) ──
@@ -2334,9 +2365,9 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             uri == "/api/onboard"    && session.method == Method.POST -> handleOnboard(session)
             uri == "/api/bridge/setup" -> handleBridgeSetup()
             uri == "/api/bridge/status" -> jsonResponse(mapOf(
-                "ready"    to isBridgeReady(),
-                "dir"      to (try { bridgeDir.absolutePath } catch (_: Exception) { "" }),
-                "has_daemon" to java.io.File(bridgeDir, "done").let { false }  // daemon sets done, we just check dir
+                "ready" to isBridgeReady(),
+                "alive" to isBridgeAlive(),
+                "dir"   to (try { bridgeDir.absolutePath } catch (_: Exception) { "" })
             ))
 
             uri == "/api/crm/contacts"   && session.method == Method.GET    -> handleCrmContacts(session)
@@ -4538,6 +4569,9 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             // Accessibility service availability
             val a11yReady = VoiceOSAccessibilityService.isAvailable()
             sb.appendLine("  Screen automation: ${if (a11yReady) "ready (take_screenshot, tap_screen, get_screen_text available)" else "not enabled — user must enable VoiceOS in Settings › Accessibility"}")
+            // Termux bridge
+            if (isBridgeAlive()) sb.appendLine("  Termux bridge:  running — run_shell, git_clone, git_setup_credential available")
+            else if (isBridgeReady()) sb.appendLine("  Termux bridge:  dir ready but daemon stopped — start with: bash ~/voiceos-bridge.sh")
         }
         sb.append("╚════════════════════════════════════════════════════════╝")
         return sb.toString()
@@ -4629,26 +4663,34 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
     private fun handleBridgeSetup(): Response {
         val dirPath = try { bridgeDir.absolutePath } catch (_: Exception) { "/sdcard/voiceos_bridge" }
         val script = """#!/data/data/com.termux/files/usr/bin/bash
-# VoiceOS Bridge Daemon
-# Generated by VoiceOS — run with: bash ~/voiceos-bridge.sh
+# VoiceOS Bridge Daemon v2
+# Run with:  bash ~/voiceos-bridge.sh
 # Background: nohup bash ~/voiceos-bridge.sh > ~/voiceos-bridge.log 2>&1 &
 BRIDGE_DIR="$dirPath"
 mkdir -p "${'$'}BRIDGE_DIR"
-echo "[VoiceOS Bridge] Started. Watching ${'$'}BRIDGE_DIR"
+echo "[VoiceOS Bridge] Started. PID $${'$'}$. Watching ${'$'}BRIDGE_DIR"
+echo ${'$'}${'$'} > "${'$'}BRIDGE_DIR/daemon.pid"
+trap 'rm -f "${'$'}BRIDGE_DIR/heartbeat.txt" "${'$'}BRIDGE_DIR/daemon.pid"; echo "[VoiceOS Bridge] Stopped."; exit 0' INT TERM
+
 while true; do
+    # Heartbeat — lets VoiceOS confirm daemon is alive without a command round-trip
+    date +%s > "${'$'}BRIDGE_DIR/heartbeat.txt"
+
     if [ -f "${'$'}BRIDGE_DIR/cmd.txt" ]; then
-        CMD=$(cat "${'$'}BRIDGE_DIR/cmd.txt")
-        WDIR=$(cat "${'$'}BRIDGE_DIR/workdir.txt" 2>/dev/null || echo "~")
-        mv "${'$'}BRIDGE_DIR/cmd.txt" "${'$'}BRIDGE_DIR/cmd.txt.lock" 2>/dev/null || { sleep 0.5; continue; }
-        EXPANDED=$(eval echo "${'$'}WDIR" 2>/dev/null || echo "${'$'}HOME")
-        OUT=$(cd "${'$'}EXPANDED" 2>/dev/null && eval "${'$'}CMD" 2>&1 | head -c 8000)
+        CMD=${'$'}(cat "${'$'}BRIDGE_DIR/cmd.txt" 2>/dev/null)
+        WDIR=${'$'}(cat "${'$'}BRIDGE_DIR/workdir.txt" 2>/dev/null || echo "~")
+        # Atomic rename prevents two processes picking up the same command
+        mv "${'$'}BRIDGE_DIR/cmd.txt" "${'$'}BRIDGE_DIR/cmd_running.txt" 2>/dev/null || { sleep 0.3; continue; }
+        EXPANDED=${'$'}(eval echo "${'$'}WDIR" 2>/dev/null || echo "${'$'}HOME")
+        # Capture output and exit code separately to preserve the real exit code
+        OUT=${'$'}(cd "${'$'}EXPANDED" 2>/dev/null; eval "${'$'}CMD" 2>&1)
         CODE=${'$'}?
-        printf '%s' "${'$'}OUT" > "${'$'}BRIDGE_DIR/result.txt"
+        printf '%s' "${'$'}OUT" | head -c 8000 > "${'$'}BRIDGE_DIR/result.txt"
         printf '%d' "${'$'}CODE" > "${'$'}BRIDGE_DIR/exit_code.txt"
-        rm -f "${'$'}BRIDGE_DIR/cmd.txt.lock"
+        rm -f "${'$'}BRIDGE_DIR/cmd_running.txt"
         touch "${'$'}BRIDGE_DIR/done"
     fi
-    sleep 0.5
+    sleep 0.3
 done
 """.trimIndent()
         return newFixedLengthResponse(Status.OK, "text/x-shellscript", script)
