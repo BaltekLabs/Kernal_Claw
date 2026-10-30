@@ -2,5 +2,7 @@ R_DEF: Internal format may change without notice
 local
 id webView
 layout activity_main
+string accessibility_service_description
 string app_name
 style Theme.VoiceOS
+xml accessibility_service_config

@@ -33,6 +33,11 @@ data class HeartbeatProbe(
      * profile has no relevant data (e.g. no projects for project_pulse).
      */
     val promptFactory: ((Map<String, Any>) -> String)? = null,
+    /**
+     * If true, this probe is handled by the nativeRunner (zero LLM cost).
+     * The llmRunner is never called for native probes.
+     */
+    val isNative: Boolean = false,
     var enabled: Boolean = true,
     @Volatile var lastRunMs: Long = 0L
 ) {
@@ -42,8 +47,14 @@ data class HeartbeatProbe(
 }
 
 class ProbeHeartbeat(
-    /** Called with a probe when it is due. Return result text, or null to skip. */
-    private val runProbe: (probe: HeartbeatProbe) -> String?
+    /**
+     * Zero-cost handler for native probes (battery, notification triage, etc.).
+     * Return non-null string to surface a result, null for idle.
+     * Return null from the lambda itself (not the String) to fall through to llmRunner.
+     */
+    private val nativeRunner: ((probe: HeartbeatProbe) -> String?)? = null,
+    /** LLM-backed handler for all other probes. Uses FAST tier model. */
+    private val llmRunner: (probe: HeartbeatProbe) -> String?
 ) {
     private val probes         = mutableListOf<HeartbeatProbe>()
     private val pendingResults = ArrayDeque<String>()   // non-idle results waiting to be popped
@@ -113,7 +124,12 @@ class ProbeHeartbeat(
         for (probe in due) {
             probe.lastRunMs = now
             try {
-                val result = runProbe(probe)?.trim() ?: continue
+                // Route: native probes bypass LLM entirely
+                val result = if (probe.isNative && nativeRunner != null) {
+                    nativeRunner.invoke(probe)?.trim()
+                } else {
+                    llmRunner(probe)?.trim()
+                } ?: continue
                 if (result.isNotBlank() && result != "[idle]") {
                     Log.d(TAG, "Probe '${probe.name}' surfaced: $result")
                     synchronized(pendingResults) { pendingResults.addLast(result) }
@@ -131,17 +147,23 @@ class ProbeHeartbeat(
         fun defaultProbes() = arrayOf(
 
             // ── Device / ambient probes ────────────────────────────
+            // ── Native probes — zero LLM cost ─────────────────────
             HeartbeatProbe(
-                name        = "notification_triage",
-                intervalMs  = 2 * 60_000L,
-                toolNames   = listOf("get_notifications", "read_sms", "get_recent_calls", "add_task", "list_tasks", "remember"),
-                prompt      = """Background check — notifications, SMS, and recent calls.
-Use get_notifications, read_sms (limit=10), and get_recent_calls (limit=10).
-For each unanswered message from a real person, missed call, or notification requiring action (not ads, social media likes, or system updates):
-  1. Check list_tasks to avoid creating a duplicate.
-  2. If no task exists, create one with add_task (title: "Reply to [name]" or "Follow up: [topic]", priority: high).
-Reply "[idle]" if nothing actionable. Otherwise ONE sentence naming what task was created."""
+                name       = "notification_triage",
+                intervalMs = 2 * 60_000L,
+                toolNames  = emptyList(),
+                isNative   = true,
+                prompt     = ""   // handled by nativeRunner in VoiceOSServer
             ),
+            HeartbeatProbe(
+                name       = "battery_watch",
+                intervalMs = 15 * 60_000L,
+                toolNames  = emptyList(),
+                isNative   = true,
+                prompt     = ""   // handled by nativeRunner in VoiceOSServer
+            ),
+
+            // ── LLM probes — use FAST tier model ──────────────────
             HeartbeatProbe(
                 name        = "calendar_check",
                 intervalMs  = 30 * 60_000L,
@@ -161,14 +183,6 @@ Use list_tasks. For any high-priority task with a clear next action you can perf
   • Take the action and update the task with the result using update_task.
 Mark tasks as done with complete_task if they appear resolved based on recent notifications or memory.
 Reply "[idle]" if the task list is healthy and nothing is immediately actionable. Otherwise ONE sentence on what you did."""
-            ),
-            HeartbeatProbe(
-                name        = "battery_watch",
-                intervalMs  = 15 * 60_000L,
-                toolNames   = listOf("get_battery"),
-                prompt      = """Background check — battery only.
-Use get_battery. Reply "[idle]" unless battery is below 20% AND not charging.
-If critical, reply ONE sentence: current percentage and charging status."""
             ),
 
             // ── Initiative probes — profile-driven ────────────────
@@ -210,37 +224,52 @@ Do NOT suggest anything. Do NOT ask questions."""
             HeartbeatProbe(
                 name       = "social_nudge",
                 intervalMs = 6 * 3600_000L,
-                toolNames  = listOf("get_relationship_health", "suggest_social_outreach", "remember"),
-                promptFactory = { profile ->
-                    @Suppress("UNCHECKED_CAST")
-                    val goals = (profile["social_goals"] as? List<*>)
-                        ?.filterIsInstance<Map<String, Any>>() ?: emptyList()
-                    if (goals.isEmpty()) "[idle]"
-                    else {
-                        val people = goals.take(6).mapNotNull { it["person"] as? String }.joinToString(", ")
-                        """Background check — social outreach.
-Tracked people: $people
-Use get_relationship_health to find who is significantly overdue for contact (>20% past their target frequency).
-Reply "[idle]" if nobody is overdue.
-Otherwise ONE sentence naming the most overdue person and how long it has been since contact."""
-                    }
+                toolNames  = listOf("get_followup_contacts", "get_relationship_health", "suggest_social_outreach", "remember"),
+                promptFactory = { _ ->
+                    """Background check — social follow-ups and outreach.
+Step 1: Call get_followup_contacts. If anyone is flagged, reply ONE sentence: "[Name] is flagged for follow-up — [brief reason from their notes]".
+Step 2 (only if nobody flagged): Call get_relationship_health with min_days_since=14. Reply ONE sentence naming the most overdue person.
+Reply "[idle]" if no flagged contacts and nobody is significantly overdue."""
                 }
             ),
 
             /**
-             * task_advance — proactively works on the highest-priority pending task.
-             * Uses run_shell, web_search, etc. to make concrete progress.
+             * task_status — READ-ONLY check for blocked or overdue tasks.
+             * Reports status only. NEVER modifies tasks, NEVER combines task context,
+             * NEVER takes action. Tasks are independent items — treat each one in isolation.
              */
             HeartbeatProbe(
-                name       = "task_advance",
-                intervalMs = 15 * 60_000L,
-                toolNames  = listOf("list_tasks", "run_shell", "web_search", "update_task", "complete_task", "remember"),
+                name       = "task_status",
+                intervalMs = 30 * 60_000L,
+                toolNames  = listOf("list_tasks"),
                 promptFactory = { _ ->
-                    """Background — proactive task work.
-Use list_tasks to find the highest-priority pending task that can be advanced autonomously.
-If you can make concrete progress right now (run a shell command, look up information, update task notes), do it.
-Report in ONE sentence what you did, or reply "[idle]" if all pending tasks require direct user involvement."""
+                    """Background — read-only task check.
+Use list_tasks. Treat EVERY task as completely independent of all others — never infer relationships.
+Reply "[idle]" unless a task has status "blocked" or was created more than 7 days ago with status still "pending".
+If something qualifies, reply ONE sentence naming only that task and its age/block reason.
+Do NOT suggest actions. Do NOT mention other tasks. Do NOT combine tasks."""
                 }
+            ),
+
+            /**
+             * context_digest — reads the context store for newly arrived high-priority items.
+             * READ-ONLY — can only surface information, never create or modify anything.
+             */
+            HeartbeatProbe(
+                name       = "context_digest",
+                intervalMs = 5 * 60_000L,
+                toolNames  = listOf(
+                    "get_pending_attention", "inbox_recap", "get_message_threads",
+                    "get_notifications", "read_sms", "get_relationship_health",
+                    "remember"
+                ),
+                prompt     = """Background check — review what needs attention right now.
+Step 1: Call inbox_recap to get a fresh read of SMS and missed calls from the last 2 hours (pass hours=2).
+Step 2: If inbox_recap shows any new SMS from real people or missed calls, surface the MOST IMPORTANT one in ONE sentence with the actual content, e.g.:
+  "Josh texted: 'Are you free this Saturday?' — want me to reply?"
+  "Missed call from Mom 12 min ago"
+Step 3: If inbox is quiet, call get_pending_attention(limit=5). Surface anything with a calendar event starting soon (< 30 min).
+Reply "[idle]" if nothing in the last 2h needs attention. Do NOT create tasks. Do NOT modify anything."""
             )
         )
     }

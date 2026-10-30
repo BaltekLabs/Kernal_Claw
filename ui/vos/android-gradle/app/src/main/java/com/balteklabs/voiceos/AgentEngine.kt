@@ -217,14 +217,27 @@ class AgentEngine(
                 writer.flush()
                 onToolBadge?.invoke(tc.name, tc.args)
                 val execResult = executeTool(tc.name, tc.args)
-                writer.write("[RESULT:${execResult.take(120)}]\n")
+                writer.write("[RESULT:${execResult.take(120).replace('\n', ' ')}]\n")
                 writer.flush()
                 toolResults += mapOf("id" to tc.id, "name" to tc.name, "result" to execResult)
             }
 
-            // Append to working message list and context
-            messages += mapOf("role" to "assistant", "content" to result.rawContent)
-            context.addAssistant(result.rawContent)
+            // Append to working message list and context.
+            // If rawContent is a Map with a "role" key it is a complete OpenAI-format
+            // message (role + content + tool_calls) and must be added as-is.
+            // Otherwise it is an Anthropic content list and gets wrapped by addAssistant.
+            val rawContent = result.rawContent
+            @Suppress("UNCHECKED_CAST")
+            val isCompleteMsg = rawContent is Map<*, *> && (rawContent as Map<*, *>).containsKey("role")
+            if (isCompleteMsg) {
+                @Suppress("UNCHECKED_CAST")
+                val msg = rawContent as Map<String, Any>
+                messages += msg
+                context.addRawMessage(msg)
+            } else {
+                messages += mapOf("role" to "assistant", "content" to rawContent)
+                context.addAssistant(rawContent)
+            }
 
             if (isAnthropic) {
                 val toolMsg = mapOf(

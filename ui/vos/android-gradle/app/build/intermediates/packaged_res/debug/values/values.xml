@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="accessibility_service_description">VoiceOS uses accessibility to capture screenshots and perform screen taps for the AI agent — letting it read emails, navigate apps, and take actions on your behalf.</string>
     <string name="app_name">VoiceOS</string>
     <style name="Theme.VoiceOS" parent="android:Theme.NoTitleBar.Fullscreen">
         <item name="android:windowBackground">@android:color/black</item>
