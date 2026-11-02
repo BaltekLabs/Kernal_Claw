@@ -24,6 +24,9 @@ function save(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
 }
 
+/** Usage key — the same package can be installed in both profiles. */
+function uk(app) { return `${app.profile || 'work'}:${app.package}`; }
+
 export function wantsWorkDesk() { return load(ENV_KEY, null) === 'work'; }
 
 export function initWorkDesk({ post, escHtml, onExit }) {
@@ -39,8 +42,10 @@ export function initWorkDesk({ post, escHtml, onExit }) {
   const ps     = document.getElementById('wd-ps');
   const matchesEl = document.getElementById('wd-matches');
 
-  let apps = [];
-  let profile = 'work';       // 'work', or 'personal' when the device has no work profile
+  let apps = [];              // disks in the rack (work apps, or personal if no work profile)
+  let personalApps = [];      // personal apps, searchable from the prompt when a work profile exists
+  let hasWork = false;
+  let profile = 'work';       // the rack's profile: 'work', or 'personal' when the device has no work profile
   let clockTimer = null;
   let busy = false;
   let mode = 'apps';          // 'apps' (DOS prompt) | 'shell' (Termux)
@@ -79,7 +84,7 @@ export function initWorkDesk({ post, escHtml, onExit }) {
   function renderRack() {
     const usage = load(USAGE_KEY, {});
     const sorted = [...apps].sort((a, b) =>
-      (usage[b.package] || 0) - (usage[a.package] || 0) || a.name.localeCompare(b.name));
+      (usage[uk(b)] || 0) - (usage[uk(a)] || 0) || a.name.localeCompare(b.name));
     rack.innerHTML = '';
     sorted.forEach(app => rack.appendChild(makeDisk(app)));
   }
@@ -178,7 +183,7 @@ export function initWorkDesk({ post, escHtml, onExit }) {
   /** Loading bar + launch. Shared by the drive and the typed prompt. */
   function runApp(app) {
     const usage = load(USAGE_KEY, {});
-    usage[app.package] = (usage[app.package] || 0) + 1;
+    usage[uk(app)] = (usage[uk(app)] || 0) + 1;
     save(USAGE_KEY, usage);
 
     const bar = print('[          ]', 'wd-bar');
@@ -191,7 +196,7 @@ export function initWorkDesk({ post, escHtml, onExit }) {
 
     return new Promise(resolve => setTimeout(async () => {
       try {
-        const res = await post('/api/launch', { package: app.package, profile });
+        const res = await post('/api/launch', { package: app.package, profile: app.profile || profile });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'failed');
         print('OK.', 'wd-dim');
       } catch (err) {
@@ -215,8 +220,8 @@ export function initWorkDesk({ post, escHtml, onExit }) {
   // `termux` switches to a Termux shell (via the bridge); `exit` comes back.
   const HELP = [
     'COMMANDS:',
-    '  <name>       FIND AND RUN AN APP',
-    '  DIR          LIST ALL DISKS',
+    '  <name>       FIND AND RUN AN APP ([W]ORK / [P]ERSONAL)',
+    '  DIR          LIST ALL APPS',
     '  $ <cmd>      RUN ONE TERMUX COMMAND',
     '  TERMUX       OPEN A TERMUX SHELL (EXIT TO LEAVE)',
     '  CLS          CLEAR SCREEN',
@@ -226,11 +231,11 @@ export function initWorkDesk({ post, escHtml, onExit }) {
     q = q.toLowerCase().trim();
     if (!q) return [];
     const usage = load(USAGE_KEY, {});
-    return apps
+    return [...apps, ...personalApps]
       .filter(a => !a.special && a.name.toLowerCase().includes(q))
       .sort((a, b) =>
         (b.name.toLowerCase().startsWith(q) - a.name.toLowerCase().startsWith(q)) ||
-        ((usage[b.package] || 0) - (usage[a.package] || 0)) ||
+        ((usage[uk(b)] || 0) - (usage[uk(a)] || 0)) ||
         a.name.localeCompare(b.name))
       .slice(0, 5);
   }
@@ -243,7 +248,8 @@ export function initWorkDesk({ post, escHtml, onExit }) {
     findApps(q).forEach((app, i) => {
       const row = document.createElement('div');
       row.className = 'wd-match' + (i === 0 ? ' wd-match-top' : '');
-      row.textContent = `${i === 0 ? '▶' : ' '} ${app.name.toUpperCase()}`;
+      const tag = hasWork ? (app.profile === 'personal' ? '[P] ' : '[W] ') : '';
+      row.textContent = `${i === 0 ? '▶' : ' '} ${tag}${app.name.toUpperCase()}`;
       // pointerup fires before the input blurs and the keyboard reflows the layout
       row.addEventListener('pointerup', e => { e.preventDefault(); typedLaunch(app); });
       matchesEl.appendChild(row);
@@ -284,8 +290,14 @@ export function initWorkDesk({ post, escHtml, onExit }) {
     print(`A:\\> ${v}`);
     if (lower === 'help' || lower === '?') { HELP.forEach(l => print(l, 'wd-dim')); return; }
     if (lower === 'dir' || lower === 'ls' || lower === 'apps') {
-      apps.filter(a => !a.special).forEach(a => print(`  ${a.name.toUpperCase()}`, 'wd-dim'));
-      print(`${apps.length} DISK(S).`, 'wd-dim');
+      const disks = apps.filter(a => !a.special);
+      if (hasWork) print('A: WORK', 'wd-bright');
+      disks.forEach(a => print(`  ${a.name.toUpperCase()}`, 'wd-dim'));
+      if (hasWork) {
+        print('C: PERSONAL', 'wd-bright');
+        personalApps.forEach(a => print(`  ${a.name.toUpperCase()}`, 'wd-dim'));
+      }
+      print(`${disks.length + personalApps.length} APP(S).`, 'wd-dim');
       return;
     }
     if (lower === 'termux' || lower === 'sh' || lower === 'shell') {
@@ -373,10 +385,19 @@ export function initWorkDesk({ post, escHtml, onExit }) {
 
     const p = await fetch('/api/profiles').then(r => r.json()).catch(() => ({ has_work: false }));
     profile = p.has_work ? 'work' : 'personal';
+    hasWork = !!p.has_work;
+
+    // Personal apps are always reachable from the prompt; the rack holds work disks.
+    const fetchApps = prof => fetch(prof === 'work' ? '/api/apps?profile=work' : '/api/apps')
+      .then(r => r.json())
+      .then(list => list.map(a => ({ ...a, profile: prof })))
+      .catch(() => []);
+    personalApps = hasWork ? await fetchApps('personal') : [];
 
     if (p.has_work && p.work_paused) {
       print('WORK PROFILE IS PAUSED.', 'wd-err');
       print('SLIDE THE KEY DISK INTO DRIVE A:');
+      print(`${personalApps.length} PERSONAL APPS ON C: — TYPE A NAME.`, 'wd-dim');
       apps = [{ package: '__resume', name: 'Resume Work', glyph: '⚿', special: 'resume' }];
       rack.appendChild(makeDisk(apps[0]));
       return;
@@ -386,10 +407,9 @@ export function initWorkDesk({ post, escHtml, onExit }) {
       print('MOUNTING PERSONAL DISKS INSTEAD.', 'wd-dim');
     }
 
-    try {
-      apps = await fetch(`/api/apps?profile=${profile}`).then(r => r.json());
-    } catch { apps = []; }
+    apps = await fetchApps(profile);
     print(`${apps.length} DISK${apps.length === 1 ? '' : 'S'} IN RACK.`, 'wd-dim');
+    if (hasWork) print(`${personalApps.length} PERSONAL APPS ON C:.`, 'wd-dim');
     print('SLIDE A DISK INTO DRIVE A:, OR TYPE A NAME.');
     print('TYPE HELP FOR COMMANDS.', 'wd-dim');
     renderRack();
