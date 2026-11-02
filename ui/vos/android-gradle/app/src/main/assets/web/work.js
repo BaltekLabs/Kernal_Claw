@@ -35,11 +35,17 @@ export function initWorkDesk({ post, escHtml, onExit }) {
   const rack   = document.getElementById('wd-rack');
   const sw     = document.getElementById('wd-switch');
   const knob   = document.getElementById('wd-knob');
+  const input  = document.getElementById('wd-input');
+  const ps     = document.getElementById('wd-ps');
+  const matchesEl = document.getElementById('wd-matches');
 
   let apps = [];
   let profile = 'work';       // 'work', or 'personal' when the device has no work profile
   let clockTimer = null;
   let busy = false;
+  let mode = 'apps';          // 'apps' (DOS prompt) | 'shell' (Termux)
+  let cwd  = '~';
+  let shellBusy = false;
 
   // ── CRT log ────────────────────────────────────────────────────
   function print(text, cls = '') {
@@ -47,8 +53,15 @@ export function initWorkDesk({ post, escHtml, onExit }) {
     line.className = 'wd-line ' + cls;
     line.textContent = text;
     log.appendChild(line);
-    while (log.children.length > 9) log.firstChild.remove();
+    while (log.children.length > 300) log.firstChild.remove();
+    log.scrollTop = log.scrollHeight;
     return line;
+  }
+
+  function prompt() { return mode === 'shell' ? `${cwd} $` : 'A:\\>'; }
+  function setPrompt() {
+    ps.textContent = prompt();
+    ps.parentElement.classList.toggle('wd-shell', mode === 'shell');   // shell is case-sensitive
   }
 
   function tickClock() {
@@ -158,11 +171,16 @@ export function initWorkDesk({ post, escHtml, onExit }) {
 
     if (app.special === 'resume') { resumeWork(ghost, el); return; }
 
+    print(`A:\\> RUN ${app.name.toUpperCase().replace(/\s+/g, '_')}`);
+    runApp(app).then(() => ejectDone(ghost, el));
+  }
+
+  /** Loading bar + launch. Shared by the drive and the typed prompt. */
+  function runApp(app) {
     const usage = load(USAGE_KEY, {});
     usage[app.package] = (usage[app.package] || 0) + 1;
     save(USAGE_KEY, usage);
 
-    print(`A:\\> RUN ${app.name.toUpperCase().replace(/\s+/g, '_')}`);
     const bar = print('[          ]', 'wd-bar');
     let n = 0;
     const fill = setInterval(() => {
@@ -171,7 +189,7 @@ export function initWorkDesk({ post, escHtml, onExit }) {
       if (n >= 10) clearInterval(fill);
     }, 60);
 
-    setTimeout(async () => {
+    return new Promise(resolve => setTimeout(async () => {
       try {
         const res = await post('/api/launch', { package: app.package, profile });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'failed');
@@ -179,18 +197,155 @@ export function initWorkDesk({ post, escHtml, onExit }) {
       } catch (err) {
         print(`ERROR: ${err.message}`, 'wd-err');
       }
-      ejectDone(ghost, el);
-    }, 420);
+      resolve();
+    }, 420));
   }
 
   function ejectDone(ghost, el) {
     setTimeout(() => {
-      ghost.remove();
-      el.classList.remove('wd-lifted');
+      ghost?.remove();
+      el?.classList.remove('wd-lifted');
       drive.classList.remove('loading');
       busy = false;
     }, 600);
   }
+
+  // ── Typed prompt ───────────────────────────────────────────────
+  // App mode: type to search disks, tap a match or press Enter for the top one.
+  // `termux` switches to a Termux shell (via the bridge); `exit` comes back.
+  const HELP = [
+    'COMMANDS:',
+    '  <name>       FIND AND RUN AN APP',
+    '  DIR          LIST ALL DISKS',
+    '  $ <cmd>      RUN ONE TERMUX COMMAND',
+    '  TERMUX       OPEN A TERMUX SHELL (EXIT TO LEAVE)',
+    '  CLS          CLEAR SCREEN',
+  ];
+
+  function findApps(q) {
+    q = q.toLowerCase().trim();
+    if (!q) return [];
+    const usage = load(USAGE_KEY, {});
+    return apps
+      .filter(a => !a.special && a.name.toLowerCase().includes(q))
+      .sort((a, b) =>
+        (b.name.toLowerCase().startsWith(q) - a.name.toLowerCase().startsWith(q)) ||
+        ((usage[b.package] || 0) - (usage[a.package] || 0)) ||
+        a.name.localeCompare(b.name))
+      .slice(0, 5);
+  }
+
+  function renderMatches() {
+    matchesEl.innerHTML = '';
+    const v = input.value;
+    if (mode !== 'apps' || v.trim().startsWith('$')) return;
+    const q = v.replace(/^\s*(run|open)\s+/i, '');
+    findApps(q).forEach((app, i) => {
+      const row = document.createElement('div');
+      row.className = 'wd-match' + (i === 0 ? ' wd-match-top' : '');
+      row.textContent = `${i === 0 ? '▶' : ' '} ${app.name.toUpperCase()}`;
+      // pointerup fires before the input blurs and the keyboard reflows the layout
+      row.addEventListener('pointerup', e => { e.preventDefault(); typedLaunch(app); });
+      matchesEl.appendChild(row);
+    });
+  }
+
+  function typedLaunch(app) {
+    if (busy) return;
+    busy = true;
+    print(`A:\\> RUN ${app.name.toUpperCase().replace(/\s+/g, '_')}`);
+    input.value = ''; matchesEl.innerHTML = '';
+    input.blur();
+    drive.classList.add('loading');
+    runApp(app).then(() => ejectDone());
+  }
+
+  function submit() {
+    const raw = input.value;
+    const v = raw.trim();
+    input.value = '';
+    matchesEl.innerHTML = '';
+    if (!v) return;
+
+    if (mode === 'shell') {
+      if (/^(exit|logout)$/i.test(v)) {
+        print(`${prompt()} ${v}`);
+        mode = 'apps'; setPrompt();
+        print('LEFT TERMUX.', 'wd-dim');
+        return;
+      }
+      if (/^(clear|cls)$/i.test(v)) { log.innerHTML = ''; return; }
+      runShell(v, true);
+      return;
+    }
+
+    const lower = v.toLowerCase();
+    if (lower === 'cls' || lower === 'clear') { log.innerHTML = ''; return; }
+    print(`A:\\> ${v}`);
+    if (lower === 'help' || lower === '?') { HELP.forEach(l => print(l, 'wd-dim')); return; }
+    if (lower === 'dir' || lower === 'ls' || lower === 'apps') {
+      apps.filter(a => !a.special).forEach(a => print(`  ${a.name.toUpperCase()}`, 'wd-dim'));
+      print(`${apps.length} DISK(S).`, 'wd-dim');
+      return;
+    }
+    if (lower === 'termux' || lower === 'sh' || lower === 'shell') {
+      mode = 'shell'; setPrompt();
+      print('TERMUX SHELL. TYPE EXIT TO RETURN.', 'wd-dim');
+      runShell('echo "$(whoami)@termux"', false);
+      return;
+    }
+    if (v.startsWith('$')) { runShell(v.slice(1).trim(), false); return; }
+
+    const match = findApps(v.replace(/^(run|open)\s+/i, ''))[0];
+    if (match) { typedLaunch(match); return; }
+    print('BAD COMMAND OR FILE NAME', 'wd-err');
+  }
+
+  async function runShell(cmd, echo) {
+    if (!cmd) return;
+    if (shellBusy) { print('BUSY — WAIT FOR THE LAST COMMAND.', 'wd-err'); return; }
+    if (echo) print(`${prompt()} ${cmd}`);
+    shellBusy = true;
+    input.disabled = true;
+    const spinner = print('…', 'wd-dim wd-cursor');
+    try {
+      const res = await fetch('/api/shell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-VoiceOS-Terminal': '1' },
+        body: JSON.stringify({ command: cmd, cwd }),
+      });
+      const data = await res.json();
+      spinner.remove();
+      if (data.offline) {
+        print('TERMUX BRIDGE OFFLINE.', 'wd-err');
+        print('IN TERMUX, RUN ONCE:', 'wd-dim');
+        print('  termux-setup-storage');
+        print('  curl -s localhost:8741/api/bridge/setup > ~/voiceos-bridge.sh');
+        print('THEN, EACH TIME:', 'wd-dim');
+        print('  bash ~/voiceos-bridge.sh &');
+        if (mode === 'shell') { mode = 'apps'; setPrompt(); }
+      } else {
+        if (data.output) data.output.split('\n').forEach(l => print(l, 'wd-out'));
+        cwd = data.cwd || cwd;
+        setPrompt();
+      }
+    } catch (err) {
+      spinner.remove();
+      print(`ERROR: ${err.message}`, 'wd-err');
+    }
+    shellBusy = false;
+    input.disabled = false;
+    if (mode === 'shell') input.focus();
+  }
+
+  input.addEventListener('input', renderMatches);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+  // Tapping the screen focuses the prompt (but not while scrolling the log)
+  screen.addEventListener('click', e => {
+    if (!matchesEl.contains(e.target)) input.focus();
+  });
 
   async function resumeWork(ghost, el) {
     print('A:\\> RESUME WORK PROFILE');
@@ -210,6 +365,8 @@ export function initWorkDesk({ post, escHtml, onExit }) {
   // ── Boot sequence ──────────────────────────────────────────────
   async function boot() {
     log.innerHTML = '';
+    mode = 'apps'; setPrompt();
+    input.value = ''; matchesEl.innerHTML = '';
     print('BALTEK WORKSTATION  v1.0', 'wd-bright');
     print('MEMORY TEST ........ OK', 'wd-dim');
     rack.innerHTML = '';
@@ -233,8 +390,8 @@ export function initWorkDesk({ post, escHtml, onExit }) {
       apps = await fetch(`/api/apps?profile=${profile}`).then(r => r.json());
     } catch { apps = []; }
     print(`${apps.length} DISK${apps.length === 1 ? '' : 'S'} IN RACK.`, 'wd-dim');
-    print('SLIDE A DISK UP INTO DRIVE A: TO RUN.');
-    print('A:\\> _', 'wd-cursor');
+    print('SLIDE A DISK INTO DRIVE A:, OR TYPE A NAME.');
+    print('TYPE HELP FOR COMMANDS.', 'wd-dim');
     renderRack();
   }
 
@@ -283,6 +440,7 @@ export function initWorkDesk({ post, escHtml, onExit }) {
     },
     close() {
       clearInterval(clockTimer);
+      input.blur();
       document.querySelectorAll('.wd-ghost').forEach(g => g.remove());
       drive.classList.remove('hot', 'loading');
       busy = false;

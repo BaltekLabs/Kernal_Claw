@@ -252,7 +252,15 @@ class VoiceOSServer(
      * [timeoutMs] is chosen by the caller based on expected duration.
      * Returns a structured result string including exit code on failure.
      */
-    private fun executeBridgeCommand(cmd: String, workdir: String, timeoutMs: Long = BRIDGE_READ_TIMEOUT_MS): String {
+    /** The bridge has a single command slot; callers (agent, terminal) take turns. */
+    private val bridgeLock = Any()
+
+    private val BRIDGE_NOT_RUNNING = "Bridge daemon not running. In Termux: bash ~/voiceos-bridge.sh"
+
+    private fun executeBridgeCommand(cmd: String, workdir: String, timeoutMs: Long = BRIDGE_READ_TIMEOUT_MS): String =
+        synchronized(bridgeLock) { executeBridgeCommandLocked(cmd, workdir, timeoutMs) }
+
+    private fun executeBridgeCommandLocked(cmd: String, workdir: String, timeoutMs: Long): String {
         return try {
             if (!isBridgeReady())
                 return "Bridge dir not accessible. Ensure termux-setup-storage has been run and the VoiceOS bridge daemon is running in Termux."
@@ -270,8 +278,15 @@ class VoiceOSServer(
             cmdFile.writeText(cmd)
 
             // Wait for daemon to signal completion
-            val deadline = System.currentTimeMillis() + timeoutMs
+            val started  = System.currentTimeMillis()
+            val deadline = started + timeoutMs
             while (System.currentTimeMillis() < deadline) {
+                // The daemon renames cmd.txt as soon as it picks a command up (it polls
+                // every 0.5 s). Still there after a few seconds → nobody is listening.
+                if (cmdFile.exists() && System.currentTimeMillis() - started > 4_000) {
+                    cmdFile.delete()
+                    return BRIDGE_NOT_RUNNING
+                }
                 if (doneFile.exists()) {
                     val out  = try { resultFile.readText().trim() } catch (_: Exception) { "" }
                     val code = try { exitFile.readText().trim().toIntOrNull() ?: 0 } catch (_: Exception) { 0 }
@@ -297,6 +312,52 @@ class VoiceOSServer(
         val timeout = if (isReadOnlyShellCmd(cmd)) BRIDGE_READ_TIMEOUT_MS else BRIDGE_WRITE_TIMEOUT_MS
         return executeBridgeCommand(cmd, workdir, timeout)
     }
+
+    // ── /api/shell — interactive terminal on the work desk ────────
+    // Runs a command the user typed through the Termux bridge and reports the
+    // new working directory, so `cd` persists between commands.
+    //
+    // Locked down harder than the other endpoints because it is a raw shell:
+    // loopback callers only, the request must come from the VoiceOS page itself
+    // (Origin), and it must carry a custom header — which forces a CORS preflight
+    // this server never approves, so other web pages can't reach it.
+    private fun handleShell(session: IHTTPSession): Response {
+        val ip     = session.remoteIpAddress ?: ""
+        val origin = session.headers["origin"]
+        val local  = ip == "127.0.0.1" || ip == "::1" || ip == "0:0:0:0:0:0:0:1"
+        val sameOrigin = origin == null ||
+            origin == "http://127.0.0.1:$listeningPort" || origin == "http://localhost:$listeningPort"
+        if (!local || !sameOrigin || session.headers["x-voiceos-terminal"] != "1")
+            return newFixedLengthResponse(Status.FORBIDDEN, MIME_PLAINTEXT, "forbidden")
+
+        val body = parseBody(session)
+        val cmd  = (body["command"] as? String)?.trim().orEmpty()
+        val cwd  = (body["cwd"] as? String)?.takeIf { it.isNotBlank() } ?: "~"
+        if (cmd.isEmpty()) return shellResponse(mapOf("output" to "", "cwd" to cwd, "ok" to true))
+
+        val cwdFile = java.io.File(bridgeDir, "cwd.txt")
+        val (out, newCwd) = synchronized(bridgeLock) {
+            cwdFile.delete()
+            // Newline (not ';') so commands ending in '&' stay valid shell.
+            val wrapped = "$cmd\n__vos_rc=\$?; pwd > '${cwdFile.absolutePath}'; (exit \$__vos_rc)"
+            val timeout = if (isReadOnlyShellCmd(cmd)) BRIDGE_READ_TIMEOUT_MS else BRIDGE_WRITE_TIMEOUT_MS
+            val o = executeBridgeCommandLocked(wrapped, cwd, timeout)
+            val c = try { cwdFile.readText().trim() } catch (_: Exception) { "" }
+            o to c.ifBlank { cwd }
+        }
+        val offline = out == BRIDGE_NOT_RUNNING || out.startsWith("Bridge dir not accessible")
+        return shellResponse(mapOf(
+            "output"  to (if (out == "(command completed, no output)") "" else out),
+            "cwd"     to newCwd,
+            "ok"      to !offline,
+            "offline" to offline
+        ))
+    }
+
+
+    /** Like jsonResponse but without the wildcard CORS header. */
+    private fun shellResponse(data: Any): Response =
+        newFixedLengthResponse(Status.OK, "application/json", gson.toJson(data))
 
     private fun toolGitSetupCredential(args: Map<String, Any>): String {
         val host     = args["host"]     as? String ?: return "Missing host"
@@ -2334,6 +2395,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             uri == "/api/profile"    && session.method == Method.GET  -> handleGetProfile()
             uri == "/api/profile"    && session.method == Method.POST -> handleSaveProfile(session)
             uri == "/api/onboard"    && session.method == Method.POST -> handleOnboard(session)
+            uri == "/api/shell"      && session.method == Method.POST -> handleShell(session)
             uri == "/api/bridge/setup" -> handleBridgeSetup()
             uri == "/api/bridge/status" -> jsonResponse(mapOf(
                 "ready"    to isBridgeReady(),
