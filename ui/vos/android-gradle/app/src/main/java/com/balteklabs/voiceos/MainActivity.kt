@@ -24,8 +24,15 @@ import android.app.Activity
 
 class MainActivity : Activity() {
 
+    companion object {
+        // One server per process, not per Activity. Android can recreate the launcher
+        // Activity while the old instance (and its server) still holds port 8741;
+        // a per-Activity server then can't bind and the UI sits on the splash.
+        @Volatile private var server: VoiceOSServer? = null
+        @Volatile private var lastError: String? = null
+    }
+
     private lateinit var webView: WebView
-    private var server: VoiceOSServer? = null
     private val port = 8741
     private val handler = Handler(Looper.getMainLooper())
 
@@ -49,13 +56,16 @@ class MainActivity : Activity() {
           .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
           @keyframes p{0%,80%,100%{transform:scale(.55);opacity:.35}
                        40%{transform:scale(1);opacity:1}}
-        </style></head><body>
+          #s{position:fixed;bottom:48px;left:24px;right:24px;text-align:center;
+             color:rgba(255,255,255,.35);font-size:12px;line-height:1.5}
+        </style></head><body onclick="location.href='voiceos://retry'">
           <div class="logo">&#x2B21;</div>
           <h1>VoiceOS</h1>
           <p>by Baltek Labs</p>
           <div class="dots">
             <div class="dot"></div><div class="dot"></div><div class="dot"></div>
           </div>
+          <div id="s"></div>
         </body></html>
     """.trimIndent()
 
@@ -131,9 +141,26 @@ class MainActivity : Activity() {
                 view: WebView,
                 url: String
             ): Boolean {
+                // Tapping the splash forces a restart attempt
+                if (url.startsWith("voiceos://retry")) { forceRestart(); return true }
                 // Only allow navigation to our local server
                 return !(url.startsWith("http://127.0.0.1:$port")
                         || url.startsWith("http://localhost:$port"))
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                // Drop the splash from history so Back can never return to it.
+                if (url.startsWith(appUrl)) view.clearHistory()
+            }
+
+            @Suppress("DEPRECATION")
+            override fun onReceivedError(view: WebView, errorCode: Int, description: String?, failingUrl: String?) {
+                // App page failed to load (server not listening yet) → splash + retry
+                if (failingUrl?.startsWith(appUrl) == true) {
+                    lastError = description
+                    showSplash()
+                    handler.postDelayed({ loadApp() }, 1500)
+                }
             }
 
             // The renderer process can be killed while the launcher is in the
@@ -184,39 +211,88 @@ class MainActivity : Activity() {
         webView.loadDataWithBaseURL(null, SPLASH_HTML, "text/html", "utf-8", null)
     }
 
-    private fun startServer(attempt: Int = 0) {
+    private fun onSplash() = webView.url?.startsWith(appUrl) != true
+
+    /** Write a status line onto the splash (no-op once the app page is up). */
+    private fun splashStatus(text: String) {
+        if (!onSplash()) return
+        val js = "var s=document.getElementById('s');if(s)s.textContent=" +
+            com.google.gson.Gson().toJson(text) + ";"
+        webView.evaluateJavascript(js, null)
+    }
+
+    private fun startServer() {
         if (serverStarting) return
         serverStarting = true
         // Show branded splash immediately so the user never sees a blank screen.
-        showSplash()
+        if (onSplash()) showSplash()
+        scheduleWatchdog()
 
         // Start NanoHTTPD in a background thread.  Once it's listening we swap in
         // the real app — same-origin HTTP, ES modules work, no CORS required.
         Thread {
             try {
-                if (!serverAlive()) {
-                    server?.stop()
-                    server = VoiceOSServer(applicationContext, port).also { it.start() }
-                    android.util.Log.i("VoiceOS", "Server started on port $port")
-                    server!!.warmupOllama()
-                    VoiceOSNotificationService.contextStore = server!!.contextStore
+                synchronized(MainActivity::class.java) {
+                    if (!serverAlive()) {
+                        try { server?.stop() } catch (_: Throwable) {}
+                        val s = VoiceOSServer(applicationContext, port)
+                        s.start()
+                        server = s
+                        lastError = null
+                        android.util.Log.i("VoiceOS", "Server started on port $port")
+                        s.warmupOllama()
+                        VoiceOSNotificationService.contextStore = s.contextStore
+                    }
                 }
-                runOnUiThread {
-                    serverStarting = false
-                    webView.loadUrl(appUrl)
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("VoiceOS", "Server failed to start (attempt ${attempt + 1}): ${e.message}", e)
-                // Typically the port is still held by a previous instance; retry.
-                handler.postDelayed({
-                    serverStarting = false
-                    if (attempt < 10) startServer(attempt + 1)
-                }, 1000)
+                runOnUiThread { webView.loadUrl(appUrl) }
+            } catch (t: Throwable) {
+                // Throwable, not Exception: an Error here used to leave serverStarting
+                // stuck at true, so nothing ever retried.
+                lastError = "${t.javaClass.simpleName}: ${t.message}"
+                android.util.Log.e("VoiceOS", "Server failed to start: $lastError", t)
+            } finally {
+                serverStarting = false
             }
         }.apply { isDaemon = true; name = "voiceos-server-start" }.start()
     }
 
     @Volatile private var serverStarting = false
+
+    /**
+     * While the splash is showing, check every few seconds and retry. Whatever
+     * went wrong (port held, start failed, load error), the launcher recovers on
+     * its own instead of sitting on the splash forever.
+     */
+    private var watchdogTicks = 0
+    private val watchdog = object : Runnable {
+        override fun run() {
+            if (!onSplash()) return
+            watchdogTicks++
+            splashStatus(
+                (lastError?.let { "Still starting… $it" } ?: "Still starting…") +
+                "\nTap to retry"
+            )
+            loadApp()
+            handler.postDelayed(this, 4000)
+        }
+    }
+
+    private fun scheduleWatchdog() {
+        handler.removeCallbacks(watchdog)
+        watchdogTicks = 0
+        handler.postDelayed(watchdog, 4000)
+    }
+
+    private fun forceRestart() {
+        splashStatus("Restarting…")
+        Thread {
+            synchronized(MainActivity::class.java) {
+                try { server?.stopWarmup(); server?.stop() } catch (_: Throwable) {}
+                server = null
+            }
+            runOnUiThread { startServer() }
+        }.start()
+    }
 
     override fun onPause() {
         super.onPause()
@@ -230,7 +306,7 @@ class MainActivity : Activity() {
         // (not a blank/splash page) is showing.
         if (!serverStarting) {
             if (!serverAlive()) startServer()
-            else if (webView.url?.startsWith(appUrl) != true) webView.loadUrl(appUrl)
+            else if (onSplash()) { webView.loadUrl(appUrl); scheduleWatchdog() }
         }
         // Re-assert immersive mode after any system dialog
         @Suppress("DEPRECATION")
@@ -245,15 +321,18 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
-        // Prevent back from exiting the launcher
-        if (webView.canGoBack()) webView.goBack()
+        // Prevent back from exiting the launcher. Only step back within the app
+        // itself — never back onto the splash.
+        val list = webView.copyBackForwardList()
+        val prev = if (list.currentIndex > 0) list.getItemAtIndex(list.currentIndex - 1) else null
+        if (prev?.url?.startsWith(appUrl) == true) webView.goBack()
         // else: do nothing (launcher stays active)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
-        server?.stopWarmup()
-        server?.stop()
+        // The server is process-wide and outlives this Activity on purpose: a
+        // recreated launcher picks it straight back up. It dies with the process.
     }
 }
