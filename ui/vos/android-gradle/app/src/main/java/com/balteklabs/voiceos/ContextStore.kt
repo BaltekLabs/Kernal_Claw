@@ -258,7 +258,9 @@ class ContextStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             FROM context_docs
             WHERE (
                 (type IN ('notification','sms_thread') AND timestamp > ?)
-                OR weight >= 2.0
+                -- High-weight messages/notifications must still be recent: their
+                -- weight is set at index time and would otherwise pin them forever.
+                OR (weight >= 2.0 AND type NOT IN ('notification','sms_thread'))
             )
             ORDER BY weight DESC, timestamp DESC
             LIMIT $limit

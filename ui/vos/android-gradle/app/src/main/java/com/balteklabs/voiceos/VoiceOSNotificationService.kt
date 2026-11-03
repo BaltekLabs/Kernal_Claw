@@ -33,6 +33,10 @@ class VoiceOSNotificationService : NotificationListenerService() {
 
         val appName = appLabel(sbn.packageName)
 
+        // Chat apps (RCS, WhatsApp, Signal…) never reach the SMS provider —
+        // keep their messages so the social tools can see current conversations.
+        try { CommsHub.messageLog(applicationContext).capture(sbn, appName) } catch (_: Exception) {}
+
         synchronized(lock) {
             // Deduplicate: same package + notification ID = update in place
             recent.removeAll { it["key"] == sbn.key }

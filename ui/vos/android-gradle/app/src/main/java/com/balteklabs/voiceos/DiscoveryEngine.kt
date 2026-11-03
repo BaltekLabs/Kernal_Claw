@@ -182,58 +182,28 @@ class DiscoveryEngine(
         Log.d(TAG, "Scanning SMS threads…")
         store.clearType(ContextStore.TYPE_SMS_THREAD)
         try {
-            // Group SMS by thread_id
-            val cur = context.contentResolver.query(
-                Uri.parse("content://sms"),
-                arrayOf("thread_id", "address", "body", "date", "read", "type"),
-                null, null, "date DESC"
-            ) ?: return
-
-            data class Msg(val address: String, val body: String, val date: Long, val read: Boolean, val outgoing: Boolean)
-            val threads = mutableMapOf<String, MutableList<Msg>>()
-            val threadAddress = mutableMapOf<String, String>()
-
-            cur.use { c ->
-                while (c.moveToNext()) {
-                    val tid     = c.getString(0) ?: continue
-                    val addr    = c.getString(1) ?: continue
-                    val body    = c.getString(2) ?: ""
-                    val date    = c.getLong(3)
-                    val read    = c.getInt(4) == 1
-                    val outgoing = c.getInt(5) == 2  // SMS type 2 = sent
-
-                    threads.getOrPut(tid) { mutableListOf() }
-                        .add(Msg(addr, body, date, read, outgoing))
-                    if (tid !in threadAddress) threadAddress[tid] = addr
+            // Last 14 days across SMS, MMS, chat apps and calls — not the whole SMS
+            // history. Bodies use absolute dates: a baked-in "3h ago" never updates.
+            val since = System.currentTimeMillis() - 14 * 86_400_000L
+            for (t in CommsHub(context).threads(since)) {
+                val lastTs = t.last.time
+                val bodyLines = t.events.take(5).map { e ->
+                    val dir = when (e.dir) { CommsHub.Dir.OUT -> "you"; CommsHub.Dir.IN -> "them"; CommsHub.Dir.MISSED -> "missed" }
+                    "[${CommsHub.stamp(e.time)}, ${e.channel}, $dir] ${e.text.take(100)}"
                 }
-            }
-
-            for ((tid, msgs) in threads) {
-                val addr     = threadAddress[tid] ?: continue
-                val name     = resolveContactName(addr)
-                val recent   = msgs.take(5)
-                val unreadCount = msgs.count { !it.read && !it.outgoing }
-                val lastTs   = msgs.firstOrNull()?.date ?: 0L
-
-                val bodyLines = recent.map { m ->
-                    val dir = if (m.outgoing) "you" else "them"
-                    val age = ageString(m.date)
-                    "[$age, $dir] ${m.body.take(100)}"
-                }
-
+                val needsReply = t.unread > 0 || t.awaitingYou
                 val weight = when {
-                    unreadCount > 0 && (System.currentTimeMillis() - lastTs) < 24 * 3_600_000L -> 2.5
+                    needsReply && (System.currentTimeMillis() - lastTs) < 24 * 3_600_000L -> 2.5
                     (System.currentTimeMillis() - lastTs) < 3 * 3_600_000L -> 1.5
                     else -> 1.0
                 }
-
                 store.upsert(
                     type      = ContextStore.TYPE_SMS_THREAD,
-                    sourceId  = tid,
-                    title     = "SMS: $name${if (unreadCount > 0) " ($unreadCount unread)" else ""}",
+                    sourceId  = t.person.lowercase(),
+                    title     = "${t.person}${if (t.unread > 0) " (${t.unread} unread)" else ""} — ${t.channels.joinToString("/")}",
                     body      = bodyLines.joinToString("\n"),
                     timestamp = lastTs,
-                    tags      = "sms message $name${if (unreadCount > 0) " unread" else ""}",
+                    tags      = "sms message chat ${t.person}${if (t.unread > 0) " unread" else ""}",
                     weight    = weight
                 )
             }

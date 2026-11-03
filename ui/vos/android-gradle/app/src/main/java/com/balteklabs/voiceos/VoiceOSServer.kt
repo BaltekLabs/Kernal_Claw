@@ -720,15 +720,32 @@ Start: introduce yourself in one sentence, then ask for their name."""
             "Read recent device notifications — messages, alerts, app notifications.",
             mapOf("limit" to mapOf("type" to "integer", "description" to "Max notifications to return (default 10)")),
             emptyList()),
+        ToolDef("get_conversations",
+            "PRIMARY tool for messages and calls. Without contact: everyone you've been in touch with recently, " +
+            "newest first — last message, channel (SMS, MMS, RCS/Messages, WhatsApp, Signal…, Call), unread count, " +
+            "missed calls, and whether they're waiting on a reply. With contact: the full back-and-forth with that " +
+            "person across all channels, with dates. Use for: who texted/called me, what did X say, did I reply, " +
+            "catch me up.",
+            mapOf(
+                "contact"     to mapOf("type" to "string",  "description" to "Person's name or number (optional) — returns their timeline"),
+                "days"        to mapOf("type" to "integer", "description" to "How far back (default 7 for overview, 60 for a contact)"),
+                "limit"       to mapOf("type" to "integer", "description" to "Max people (overview) or events (contact)"),
+                "unread_only" to mapOf("type" to "boolean", "description" to "Overview only: just unread / waiting-on-you threads")
+            ), emptyList()),
         ToolDef("read_sms",
-            "Read recent SMS messages from the inbox.",
+            "Read recent messages (SMS, MMS, RCS and chat apps — same as get_conversations). " +
+            "With contact: that person's recent conversation in both directions.",
             mapOf(
                 "contact" to mapOf("type" to "string",  "description" to "Filter by contact name or number (optional)"),
-                "limit"   to mapOf("type" to "integer", "description" to "Max messages to return (default 10)")
+                "days"    to mapOf("type" to "integer", "description" to "How far back (default 7, or 60 with a contact)"),
+                "limit"   to mapOf("type" to "integer", "description" to "Max results (default 12)")
             ), emptyList()),
         ToolDef("get_recent_calls",
-            "Read the recent call log — incoming, outgoing, and missed calls.",
-            mapOf("limit" to mapOf("type" to "integer", "description" to "Max calls to return (default 10)")),
+            "Read the call log — incoming, outgoing, and missed calls — within a time window.",
+            mapOf(
+                "limit" to mapOf("type" to "integer", "description" to "Max calls to return (default 10)"),
+                "days"  to mapOf("type" to "integer", "description" to "How far back (default 14)")
+            ),
             emptyList()),
         ToolDef("recall",
             "Retrieve previously stored notes and remembered information",
@@ -1050,8 +1067,9 @@ Start: introduce yourself in one sentence, then ask for their name."""
                 "limit" to mapOf("type" to "integer", "description" to "Max items to return (default 8)")
             ), emptyList()),
         ToolDef("get_message_threads",
-            "Get all recent SMS thread summaries grouped by contact — shows the last few messages per thread and whether there are unread messages.",
+            "Recent conversations grouped by person (live; same as get_conversations without a contact).",
             mapOf(
+                "days"    to mapOf("type" to "integer", "description" to "How far back (default 7)"),
                 "limit"   to mapOf("type" to "integer", "description" to "Max threads to return (default 10)"),
                 "unread_only" to mapOf("type" to "boolean", "description" to "Only return threads with unread messages (default false)")
             ), emptyList()),
@@ -1207,10 +1225,32 @@ Start: introduce yourself in one sentence, then ask for their name."""
         prefs.edit().putString("crm_relationships", gson.toJson(rel)).apply()
     }
 
-    /** Compute days since last device interaction (call or SMS) for a name. */
+    // ── Communications (SMS + MMS + calls + chat apps) ─────────────
+    private val commsHub by lazy { CommsHub(context) }
+
+    @Volatile private var lastContactCache: Pair<Long, Map<String, Long>>? = null
+
+    /**
+     * Most recent interaction per number suffix and per "name:<lowercase>", across
+     * every channel. Cached for a minute — relationship tools look up many people.
+     */
+    private fun lastContactMs(): Map<String, Long> {
+        val cached = lastContactCache
+        if (cached != null && System.currentTimeMillis() - cached.first < 60_000) return cached.second
+        val map = try { CommsHub(context).lastContactMap() } catch (_: Exception) { emptyMap() }
+        lastContactCache = System.currentTimeMillis() to map
+        return map
+    }
+
+    private fun daysAgo(ms: Long?): Int? =
+        ms?.takeIf { it > 0 }?.let { ((System.currentTimeMillis() - it) / 86_400_000L).toInt() }
+
+    /** Days since last interaction (any channel) for a name. */
     private fun daysSinceLastDeviceContact(name: String): Int? {
-        val number = resolveContact(name) ?: return null
-        return daysSinceLastContactByNumber(number)
+        val map    = lastContactMs()
+        val byName = map["name:${name.lowercase()}"]
+        val byNum  = resolveContact(name)?.let { CommsHub.suffix(it) }?.let { map[it] }
+        return daysAgo(listOfNotNull(byName, byNum).maxOrNull())
     }
 
     /** Build a rich contact profile for the agent */
@@ -1350,7 +1390,9 @@ Start: introduce yourself in one sentence, then ask for their name."""
                     val cName = c.getString(0)?.takeIf { it.isNotBlank() } ?: continue
                     if (cName.lowercase() in rel || cName.lowercase() in seen) continue
                     seen += cName.lowercase()
-                    val days = ((System.currentTimeMillis() - c.getLong(2)) / 86_400_000L).toInt()
+                    // Last call isn't last contact — they may text or chat daily
+                    val days = daysSinceLastDeviceContact(cName)
+                        ?: ((System.currentTimeMillis() - c.getLong(2)) / 86_400_000L).toInt()
                     callContacts += Health(cName, days, null, null)
                 }
             }
@@ -1403,7 +1445,11 @@ Start: introduce yourself in one sentence, then ask for their name."""
         callFrequency.forEach { (name, pair) ->
             val (count, lastDate) = pair
             if (count < 3) return@forEach
-            val days = ((System.currentTimeMillis() - lastDate) / 86_400_000L).toInt()
+            // Last call isn't last contact — they may text or chat daily
+            val days = minOf(
+                ((System.currentTimeMillis() - lastDate) / 86_400_000L).toInt(),
+                daysSinceLastDeviceContact(name) ?: Int.MAX_VALUE
+            )
             if (days >= threshold && candidates.none { it.name.equals(name, ignoreCase = true) }) {
                 candidates += Candidate(name, days, null, "Frequent contact (${count} calls total)")
             }
@@ -1584,54 +1630,11 @@ Start: introduce yourself in one sentence, then ask for their name."""
             noteLines.takeLast(limit).forEach { sb.appendLine("  $it") }
         }
 
-        // Device calls
-        val number = resolveContact(name) ?: resolveContact(key)
-        if (number != null) {
-            val calls = mutableListOf<String>()
-            try {
-                context.contentResolver.query(
-                    android.provider.CallLog.Calls.CONTENT_URI,
-                    arrayOf(android.provider.CallLog.Calls.TYPE, android.provider.CallLog.Calls.DATE,
-                            android.provider.CallLog.Calls.DURATION),
-                    "${android.provider.CallLog.Calls.NUMBER} LIKE ?",
-                    arrayOf("%${number.takeLast(9)}%"),
-                    "${android.provider.CallLog.Calls.DATE} DESC"
-                )?.use { c ->
-                    while (c.moveToNext() && calls.size < limit) {
-                        val type = when (c.getInt(0)) {
-                            android.provider.CallLog.Calls.INCOMING_TYPE -> "↙ call"
-                            android.provider.CallLog.Calls.OUTGOING_TYPE -> "↗ call"
-                            else                                          -> "✗ missed"
-                        }
-                        val ts  = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US)
-                            .format(java.util.Date(c.getLong(1)))
-                        val dur = c.getLong(2)
-                        calls += "[$ts] $type${if (dur > 0) " (${dur}s)" else ""}"
-                    }
-                }
-            } catch (_: Exception) {}
-            if (calls.isNotEmpty()) { sb.appendLine("\nCall log:"); calls.forEach { sb.appendLine("  $it") } }
-
-            // SMS excerpts
-            val msgs = mutableListOf<String>()
-            try {
-                context.contentResolver.query(
-                    android.net.Uri.parse("content://sms"),
-                    arrayOf("body", "date", "type"),
-                    "address LIKE ?",
-                    arrayOf("%${number.takeLast(9)}%"),
-                    "date DESC"
-                )?.use { c ->
-                    while (c.moveToNext() && msgs.size < 5) {
-                        val dir = if (c.getInt(2) == 1) "them" else "you"
-                        val ts  = java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US)
-                            .format(java.util.Date(c.getLong(1)))
-                        msgs += "[$ts] ($dir) ${c.getString(0)?.take(80) ?: ""}"
-                    }
-                }
-            } catch (_: Exception) {}
-            if (msgs.isNotEmpty()) { sb.appendLine("\nRecent SMS:"); msgs.forEach { sb.appendLine("  $it") } }
-        }
+        // Calls, SMS, MMS and chat-app messages in one timeline
+        try {
+            sb.appendLine("\nCommunications (last 90 days):")
+            sb.appendLine(CommsHub(context).timeline(name, 90, limit))
+        } catch (_: Exception) {}
 
         return sb.toString().trimEnd().ifBlank { "No interaction history found for $name." }
     }
@@ -1765,39 +1768,7 @@ Start: introduce yourself in one sentence, then ask for their name."""
      * Pre-build a map of phone-number-suffix → latest contact epoch-ms from call log + SMS.
      * Two queries instead of 2-per-contact, making handleCrmContacts O(1) in DB round-trips.
      */
-    private fun buildLastContactMap(): Map<String, Long> {
-        val map = mutableMapOf<String, Long>()
-        try {
-            context.contentResolver.query(
-                android.provider.CallLog.Calls.CONTENT_URI,
-                arrayOf(android.provider.CallLog.Calls.NUMBER, android.provider.CallLog.Calls.DATE),
-                null, null, "${android.provider.CallLog.Calls.DATE} DESC"
-            )?.use { c ->
-                while (c.moveToNext()) {
-                    val num = c.getString(0) ?: ""
-                    if (num.isBlank()) continue
-                    val suffix = num.takeLast(9)
-                    if (suffix !in map) map[suffix] = c.getLong(1)
-                }
-            }
-        } catch (_: Exception) {}
-        try {
-            context.contentResolver.query(
-                android.net.Uri.parse("content://sms"),
-                arrayOf("address", "date"),
-                null, null, "date DESC"
-            )?.use { c ->
-                while (c.moveToNext()) {
-                    val addr = c.getString(0) ?: ""
-                    if (addr.isBlank()) continue
-                    val suffix = addr.takeLast(9)
-                    val date = c.getLong(1)
-                    map[suffix] = maxOf(map[suffix] ?: 0L, date)
-                }
-            }
-        } catch (_: Exception) {}
-        return map
-    }
+    private fun buildLastContactMap(): Map<String, Long> = lastContactMs()
 
     /** Reverse-lookup: phone number → display name from contacts, used by import. */
     private fun resolveNumberToDisplayName(number: String): String? {
@@ -1819,15 +1790,12 @@ Start: introduce yourself in one sentence, then ask for their name."""
         val displayName = (entry["displayName"] as? String)?.takeIf { it.isNotBlank() }
             ?: key.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.titlecase() } }
         val phone    = (entry["phone"] as? String) ?: resolveContact(displayName) ?: resolveContact(key) ?: ""
-        val days     = if (phone.isNotBlank()) {
-            if (lastContactMs != null) {
-                val suffix = phone.takeLast(9)
-                val latest = lastContactMs[suffix] ?: 0L
-                if (latest > 0L) ((System.currentTimeMillis() - latest) / 86_400_000L).toInt() else null
-            } else {
-                daysSinceLastContactByNumber(phone)
-            }
-        } else null
+        // Any channel — matched by number, or by name for chat apps that have no number
+        val map      = lastContactMs ?: this.lastContactMs()
+        val days     = daysAgo(listOfNotNull(
+            CommsHub.suffix(phone)?.let { map[it] },
+            map["name:${displayName.lowercase()}"]
+        ).maxOrNull())
         // Split notes into a list of {ts, text} objects for the UI
         val notesRaw = entry["notes"] as? String ?: ""
         val noteLines = if (notesRaw.isBlank()) emptyList<Map<String, String>>()
@@ -1862,31 +1830,9 @@ Start: introduce yourself in one sentence, then ask for their name."""
         )
     }
 
-    /** Days since last call OR SMS using a phone number directly (no name lookup) */
-    private fun daysSinceLastContactByNumber(number: String): Int? {
-        val suffix = number.takeLast(9)
-        var latest = 0L
-        try {
-            context.contentResolver.query(
-                android.provider.CallLog.Calls.CONTENT_URI,
-                arrayOf(android.provider.CallLog.Calls.DATE),
-                "${android.provider.CallLog.Calls.NUMBER} LIKE ?",
-                arrayOf("%$suffix%"),
-                "${android.provider.CallLog.Calls.DATE} DESC"
-            )?.use { c -> if (c.moveToFirst()) latest = maxOf(latest, c.getLong(0)) }
-        } catch (_: Exception) {}
-        try {
-            context.contentResolver.query(
-                android.net.Uri.parse("content://sms"),
-                arrayOf("date"),
-                "address LIKE ?",
-                arrayOf("%$suffix%"),
-                "date DESC"
-            )?.use { c -> if (c.moveToFirst()) latest = maxOf(latest, c.getLong(0)) }
-        } catch (_: Exception) {}
-        if (latest == 0L) return null
-        return ((System.currentTimeMillis() - latest) / 86_400_000L).toInt()
-    }
+    /** Days since last interaction on any channel, by phone number. */
+    private fun daysSinceLastContactByNumber(number: String): Int? =
+        daysAgo(CommsHub.suffix(number)?.let { lastContactMs()[it] })
 
     private fun handleCrmContacts(session: IHTTPSession): Response {
         val typeFilter   = session.parameters["type"]?.firstOrNull()?.takeIf { it.isNotBlank() && it != "all" }
@@ -2067,14 +2013,16 @@ Start: introduce yourself in one sentence, then ask for their name."""
                 systemPromptSuffix = """
 ## Active skill: Communication
 Focus on the user's communication needs.
-- **Inbox / message recap:** Call inbox_recap first when user asks about messages, what they missed, or wants a summary.
-- **Specific conversation:** Use summarize_sms_thread(contact="name") for a full thread, or read_sms(contact="name") for raw messages.
-- **Unread threads:** Use get_message_threads(unread_only=true) from the context index (may be slightly stale; use read_sms for real-time).
+- **Who's been in touch / messages / calls:** get_conversations — one live view across SMS, MMS, RCS, chat apps and calls, newest first.
+- **Specific person:** get_conversations(contact="name") — full back-and-forth with dates, both directions.
+- **What needs a reply:** get_conversations(unread_only=true).
+- **Full catch-up (messages + missed calls + other notifications):** inbox_recap.
+- Always state how recent things are (e.g. "2h ago", "Tuesday"). If the newest item is days old, say so rather than presenting it as new.
+- RCS/WhatsApp/Signal history only exists from when VoiceOS had notification access; the tool output says from when. Mention this if the user expects a conversation that isn't there.
 - For outgoing messages: draft_email for email, send_sms for SMS, send_whatsapp for WhatsApp — all queue for approval.
-- Missed calls: get_recent_calls filtered to missed type.
 - Never answer message questions from the device snapshot — always call the relevant tool for fresh data.""",
                 toolNames          = listOf(
-                    "inbox_recap", "summarize_sms_thread",
+                    "get_conversations", "inbox_recap", "summarize_sms_thread",
                     "context_search", "get_pending_attention", "get_message_threads",
                     "read_sms", "get_recent_calls", "get_notifications",
                     "call_contact", "send_sms", "draft_email", "send_whatsapp",
@@ -2305,7 +2253,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                     "get_birthday_reminders", "schedule_social",
                     "get_interaction_history", "log_sentiment",
                     "bulk_relationship_review",
-                    "read_sms", "get_recent_calls", "call_contact", "send_sms",
+                    "get_conversations", "read_sms", "get_recent_calls", "call_contact", "send_sms",
                     "add_task", "create_event", "remember", "recall", "get_device_info"
                 ),
                 triggerWords       = listOf(
@@ -2922,6 +2870,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                 "get_volume"        -> toolGetVolume()
                 "get_device_info"   -> toolGetDeviceInfo()
                 "get_notifications" -> toolGetNotifications(args)
+                "get_conversations" -> toolGetConversations(args)
                 "read_sms"          -> toolReadSms(args)
                 "get_recent_calls"  -> toolGetRecentCalls(args)
                 "recall"            -> toolRecall()
@@ -3115,40 +3064,34 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
         }
     }
 
+    /**
+     * get_conversations — the primary message tool. Overview of everyone you've
+     * been in touch with (newest first), or the full timeline with one person,
+     * across SMS, MMS, calls and chat apps.
+     */
+    private fun toolGetConversations(args: Map<String, Any>): String {
+        val contact    = (args["contact"] as? String)?.takeIf { it.isNotBlank() }
+        val unreadOnly = args["unread_only"] as? Boolean ?: false
+        return if (contact != null) {
+            val days  = (args["days"]  as? Double)?.toInt() ?: 60
+            val limit = (args["limit"] as? Double)?.toInt() ?: 25
+            CommsHub(context).timeline(contact, days, limit)
+        } else {
+            val days  = (args["days"]  as? Double)?.toInt() ?: 7
+            val limit = (args["limit"] as? Double)?.toInt() ?: 12
+            CommsHub(context).overview(days, limit, unreadOnly)
+        }
+    }
+
     private fun toolReadSms(args: Map<String, Any>): String {
-        val limit   = (args["limit"]   as? Double)?.toInt() ?: 10
-        val contact = args["contact"]  as? String
-        return try {
-            val sel   = if (!contact.isNullOrBlank()) "address LIKE ?" else null
-            val sArgs = if (!contact.isNullOrBlank()) arrayOf("%$contact%") else null
-            val cur   = context.contentResolver.query(
-                android.net.Uri.parse("content://sms/inbox"),
-                arrayOf("address", "body", "date", "read"), sel, sArgs, "date DESC"
-            )
-            val results = mutableListOf<String>()
-            cur?.use {
-                while (it.moveToNext() && results.size < limit) {
-                    val addr   = it.getString(0) ?: "?"
-                    val body   = it.getString(1) ?: ""
-                    val date   = it.getLong(2)
-                    val unread = it.getInt(3) != 1
-                    val age    = System.currentTimeMillis() - date
-                    val ageStr = when {
-                        age < 60_000     -> "just now"
-                        age < 3_600_000  -> "${age / 60_000}m ago"
-                        age < 86_400_000 -> "${age / 3_600_000}h ago"
-                        else             -> "${age / 86_400_000}d ago"
-                    }
-                    results += "[$ageStr]${if (unread) "[UNREAD]" else ""} ${resolveContactName(addr)}: ${body.take(160)}"
-                }
-            }
-            if (results.isEmpty()) "No messages${if (!contact.isNullOrBlank()) " from $contact" else ""}."
-            else results.joinToString("\n")
-        } catch (e: Exception) { "SMS unavailable: ${e.message}" }
+        // Backed by the hub now: SMS alone misses RCS/MMS/chat apps and surfaces stale threads.
+        return toolGetConversations(args)
     }
 
     private fun toolGetRecentCalls(args: Map<String, Any>): String {
         val limit = (args["limit"] as? Double)?.toInt() ?: 10
+        val days  = (args["days"]  as? Double)?.toInt() ?: 14
+        val since = System.currentTimeMillis() - days * 86_400_000L
         return try {
             val cur = context.contentResolver.query(
                 android.provider.CallLog.Calls.CONTENT_URI,
@@ -3157,7 +3100,8 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                         android.provider.CallLog.Calls.TYPE,
                         android.provider.CallLog.Calls.DATE,
                         android.provider.CallLog.Calls.DURATION),
-                null, null, "${android.provider.CallLog.Calls.DATE} DESC"
+                "${android.provider.CallLog.Calls.DATE} > ?", arrayOf(since.toString()),
+                "${android.provider.CallLog.Calls.DATE} DESC"
             )
             val results = mutableListOf<String>()
             cur?.use {
@@ -3179,10 +3123,10 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
                         age < 86_400_000 -> "${age / 3_600_000}h ago"
                         else             -> "${age / 86_400_000}d ago"
                     }
-                    results += "[$ageStr] $typeStr — $name${if (duration > 0) " (${duration}s)" else ""}"
+                    results += "[$ageStr · ${CommsHub.stamp(date)}] $typeStr — $name${if (duration > 0) " (${duration}s)" else ""}"
                 }
             }
-            if (results.isEmpty()) "No recent calls." else results.joinToString("\n")
+            if (results.isEmpty()) "No calls in the last $days day(s)." else results.joinToString("\n")
         } catch (e: Exception) { "Call log unavailable: ${e.message}" }
     }
 
@@ -4090,45 +4034,8 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
     private fun toolSummarizeSmsThread(args: Map<String, Any>): String {
         val contact = args["contact"] as? String ?: return "Missing contact"
         val limit   = (args["limit"] as? Double)?.toInt() ?: 20
-        return try {
-            val number = resolveContact(contact) ?: contact
-            val suffix = number.takeLast(9)
-            val cur = context.contentResolver.query(
-                android.net.Uri.parse("content://sms"),
-                arrayOf("address", "body", "date", "type"),
-                "address LIKE ?",
-                arrayOf("%$suffix%"),
-                "date DESC"
-            )
-            val msgs = mutableListOf<Triple<String, String, Boolean>>()  // (ageStr, body, isIncoming)
-            cur?.use { c ->
-                while (c.moveToNext() && msgs.size < limit) {
-                    val body     = c.getString(1) ?: continue
-                    val date     = c.getLong(2)
-                    val incoming = c.getInt(3) == 1
-                    val age      = System.currentTimeMillis() - date
-                    val ageStr   = when {
-                        age < 3_600_000  -> "${age / 60_000}m ago"
-                        age < 86_400_000 -> "${age / 3_600_000}h ago"
-                        else             -> "${age / 86_400_000}d ago"
-                    }
-                    msgs += Triple(ageStr, body, incoming)
-                }
-            }
-            if (msgs.isEmpty()) return "No SMS conversation found with $contact"
-            val sb = StringBuilder("### SMS Thread with $contact (${msgs.size} messages)\n\n")
-            // Show most recent first in summary
-            msgs.reversed().takeLast(10).forEach { (age, body, incoming) ->
-                val who = if (incoming) contact.split(" ").first() else "You"
-                sb.appendLine("[$age] **$who**: ${body.take(120)}")
-            }
-            sb.appendLine()
-            val unread = msgs.count { it.third }
-            val lastMsg = msgs.first()
-            sb.appendLine("**Latest:** ${lastMsg.second.take(80)} (${lastMsg.first})")
-            if (unread > 0) sb.appendLine("**Unread messages:** $unread")
-            sb.toString().trimEnd()
-        } catch (e: Exception) { "SMS read failed: ${e.message}" }
+        return try { CommsHub(context).timeline(contact, 60, limit) }
+        catch (e: Exception) { "Conversation read failed: ${e.message}" }
     }
 
     private fun toolInboxRecap(args: Map<String, Any> = emptyMap()): String {
@@ -4136,42 +4043,10 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
         val cutoffMs  = System.currentTimeMillis() - hoursBack * 3_600_000L
         val sb = StringBuilder("## Inbox — last ${hoursBack}h\n\n")
 
-        // ── SMS threads (grouped by contact, fresh read) ──────────
+        // ── Conversations: SMS + MMS + chat apps + calls, grouped by person ──
         try {
-            val cur = context.contentResolver.query(
-                android.net.Uri.parse("content://sms"),
-                arrayOf("address", "body", "date", "type", "read"),
-                "date > ?", arrayOf(cutoffMs.toString()), "date DESC"
-            )
-            // Group messages by resolved contact name, preserving first-seen order (most recent thread first)
-            val byContact = LinkedHashMap<String, MutableList<Triple<Long, String, Int>>>()
-            cur?.use { c ->
-                while (c.moveToNext()) {
-                    val addr = c.getString(0) ?: continue
-                    val body = c.getString(1) ?: ""
-                    val date = c.getLong(2)
-                    val type = c.getInt(3)   // 1=inbox/received, 2=sent
-                    val name = try { resolveContactName(addr) } catch (_: Exception) { addr.takeLast(10) }
-                    byContact.getOrPut(name) { mutableListOf() } += Triple(date, body, type)
-                }
-            }
-            if (byContact.isEmpty()) {
-                sb.appendLine("**SMS:** No messages in the last ${hoursBack}h.")
-            } else {
-                sb.appendLine("**SMS threads (${byContact.size}):**")
-                byContact.entries.take(10).forEach { (name, msgs) ->
-                    val latest   = msgs.maxByOrNull { it.first }!!
-                    val incoming = latest.third == 1
-                    val ageMs    = System.currentTimeMillis() - latest.first
-                    val age      = when { ageMs < 3_600_000 -> "${ageMs/60_000}m ago"; else -> "${ageMs/3_600_000}h ago" }
-                    val preview  = latest.second.take(120).replace('\n', ' ')
-                    val inCount  = msgs.count { it.third == 1 }
-                    val unreadTag = if (inCount > 0) " [${inCount} in]" else ""
-                    val who       = if (incoming) name else "You"
-                    sb.appendLine("• **$name**$unreadTag [$age] $who: \"$preview\"")
-                }
-            }
-        } catch (e: Exception) { sb.appendLine("SMS: ${e.message}") }
+            sb.appendLine(CommsHub(context).overview(hoursBack * 3_600_000L, "${hoursBack}h", 10))
+        } catch (e: Exception) { sb.appendLine("Conversations: ${e.message}") }
 
         // ── Missed calls ──────────────────────────────────────────
         sb.appendLine()
@@ -4441,7 +4316,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
             val types = items.map { it.type }.toSet()
             if (ContextStore.TYPE_SMS_THREAD in types) {
                 val unreadThreads = items.filter { it.type == ContextStore.TYPE_SMS_THREAD && "unread" in it.tags }
-                if (unreadThreads.isNotEmpty()) appendLine("• Reply to ${unreadThreads.size} unread SMS thread(s): use send_sms or get_message_threads for details")
+                if (unreadThreads.isNotEmpty()) appendLine("• Reply to ${unreadThreads.size} unread thread(s): use get_conversations(unread_only=true) for details")
             }
             if (ContextStore.TYPE_NOTIFICATION in types) appendLine("• Check notifications: use get_notifications for full detail")
             if (ContextStore.TYPE_CALENDAR in types) appendLine("• Upcoming events: use read_calendar to confirm details")
@@ -4453,21 +4328,11 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
     }
 
     private fun toolGetMessageThreads(args: Map<String, Any>): String {
+        // Live read (was the cached index, whose snapshot went stale between scans)
         val limit      = (args["limit"]       as? Double)?.toInt() ?: 10
         val unreadOnly = args["unread_only"]  as? Boolean ?: false
-        var threads = contextStore.getByType(ContextStore.TYPE_SMS_THREAD, limit * 2)
-        if (unreadOnly) threads = threads.filter { "unread" in it.tags }
-        threads = threads.take(limit)
-        if (threads.isEmpty()) return if (unreadOnly) "No unread SMS threads." else "No SMS threads in context store. Try discover_now."
-        val sdf = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
-        return buildString {
-            appendLine("SMS threads (${threads.size}):")
-            threads.forEach { doc ->
-                val age = sdf.format(java.util.Date(doc.timestamp))
-                appendLine("\n── ${doc.title} [$age]")
-                doc.body.lines().take(5).forEach { appendLine("  $it") }
-            }
-        }.trimEnd()
+        val days       = (args["days"]        as? Double)?.toInt() ?: 7
+        return CommsHub(context).overview(days, limit, unreadOnly)
     }
 
     private fun toolDiscoverNow(): String {
@@ -4525,7 +4390,7 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
 - call_contact and navigate open the app directly.
 - **Tasks are completely independent items.** Never infer that tasks are related or sequential just because they appear in the same list. Never combine the context of separate tasks. Never act on multiple tasks in a single turn unless the user explicitly asks you to work on multiple tasks.
 - **Never act on a task autonomously.** Only advance a task when the user explicitly asks "work on this task" or "do [task title]". Listing tasks does not mean the user wants them executed.
-- **Messages & inbox:** When the user asks about messages, SMS, inbox, what they missed, or wants a recap — ALWAYS call inbox_recap or read_sms. Do not answer from the device snapshot; it may be stale. For a specific person: call read_sms(contact="name") or summarize_sms_thread(contact="name").
+- **Messages & calls:** When the user asks about messages, texts, calls, who reached out, or what they missed — ALWAYS call get_conversations (or inbox_recap for a full catch-up). Do not answer from the device snapshot; it may be stale. For a specific person: get_conversations(contact="name"). Always say how recent each item is.
 - **Daily events / schedule:** When asked about today's schedule, calendar, or events — call read_calendar(days=1). Do not guess from snapshot.
 - **Morning / daily briefing:** Call morning_briefing when user says "good morning", "brief me", "plan my day", or asks for a daily summary.$profile$ctx$skill"""
     }
