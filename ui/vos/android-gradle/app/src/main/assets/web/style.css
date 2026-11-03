@@ -2157,27 +2157,8 @@ html, body {
 .wd-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .wd-brand { color: var(--wd-case); font-size: 11px; letter-spacing: .2em; font-weight: 700; opacity: .8; }
 
-/* Slide toggle */
-.wd-switch {
-  position: relative; width: 168px; height: 38px; flex-shrink: 0;
-  border-radius: 6px; padding: 3px;
-  background: #15120d;
-  box-shadow: inset 0 2px 6px rgba(0,0,0,.8), 0 1px 0 rgba(255,255,255,.08);
-}
-.wd-switch-hint {
-  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  color: var(--wd-amber-dim); font-size: 11px; letter-spacing: .12em;
-}
-.wd-knob {
-  position: absolute; right: 3px; top: 3px; bottom: 3px; width: 76px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 4px;
-  background: linear-gradient(#e2dac6, var(--wd-case-dark));
-  box-shadow: 0 2px 4px rgba(0,0,0,.6), inset 0 1px 0 #fff8;
-  color: #3a3226; font-size: 12px; font-weight: 700; letter-spacing: .15em;
-  transition: transform .2s ease;
-  touch-action: none;
-}
+.wd-top { min-height: 28px; }
+.wd-exit-hint { color: var(--wd-amber-dim); font-size: 10px; letter-spacing: .12em; white-space: nowrap; }
 
 /* Monitor + CRT */
 .wd-monitor {

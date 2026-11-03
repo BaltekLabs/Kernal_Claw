@@ -36,8 +36,6 @@ export function initWorkDesk({ post, escHtml, onExit }) {
   const clock  = document.getElementById('wd-clock');
   const drive  = document.getElementById('wd-drive');
   const rack   = document.getElementById('wd-rack');
-  const sw     = document.getElementById('wd-switch');
-  const knob   = document.getElementById('wd-knob');
   const input  = document.getElementById('wd-input');
   const ps     = document.getElementById('wd-ps');
   const matchesEl = document.getElementById('wd-matches');
@@ -415,41 +413,71 @@ export function initWorkDesk({ post, escHtml, onExit }) {
     renderRack();
   }
 
-  // ── Environment switch (slide left → personal) ─────────────────
+  // ── Swipe down → personal (same gesture that brought you here) ──
+  // The desk follows the finger, then either drops away or snaps back.
+  // Ignored where a downward drag means something else: the disk rack, the
+  // match list, and the log when it is scrolled up.
   {
-    let pid = null, startX = 0, travel = 0, x = 0;
-    const setX = v => { x = v; knob.style.transform = `translateX(${v}px)`; };
+    let tracking = false, dragging = false, startX = 0, startY = 0, startT = 0, dy = 0;
 
-    knob.addEventListener('pointerdown', e => {
-      pid = e.pointerId; startX = e.clientX;
-      travel = sw.clientWidth - knob.offsetWidth - 6;
-      knob.style.transition = 'none';
-      try { knob.setPointerCapture(pid); } catch { /* ignore */ }
-    });
-    knob.addEventListener('pointermove', e => {
-      if (e.pointerId !== pid) return;
-      setX(Math.max(-travel, Math.min(0, e.clientX - startX)));
-    });
-    const release = e => {
-      if (e.pointerId !== pid) return;
-      pid = null;
-      knob.style.transition = '';
-      if (x < -travel * 0.6) {
-        setX(-travel);
+    const blocked = target =>
+      rack.contains(target) || matchesEl.contains(target) ||
+      (log.contains(target) && log.scrollTop > 0);
+
+    desk.addEventListener('touchstart', e => {
+      if (e.touches.length !== 1 || busy || blocked(e.target)) { tracking = false; return; }
+      tracking = true; dragging = false; dy = 0;
+      startX = e.touches[0].clientX; startY = e.touches[0].clientY; startT = Date.now();
+    }, { passive: true });
+
+    desk.addEventListener('touchmove', e => {
+      if (!tracking) return;
+      const t = e.touches[0];
+      const dx = t.clientX - startX;
+      dy = t.clientY - startY;
+      if (!dragging) {
+        if (dy > 14 && dy > Math.abs(dx) * 1.5) {
+          dragging = true;
+          desk.style.transition = 'none';
+          input.blur();
+        } else if (Math.abs(dx) > 14 || dy < -14) { tracking = false; return; }
+        else return;
+      }
+      desk.style.transform = `translateY(${Math.max(0, dy)}px)`;
+    }, { passive: true });
+
+    const release = () => {
+      if (!tracking) return;
+      tracking = false;
+      if (!dragging) return;
+      dragging = false;
+      const fast = dy / Math.max(1, Date.now() - startT) > 0.6;   // px/ms flick
+      desk.style.transition = 'transform .28s ease-' + (dy > 120 || fast ? 'in' : 'out');
+      if (dy > 120 || (fast && dy > 40)) {
         if (navigator.vibrate) navigator.vibrate(12);
-        save(ENV_KEY, 'personal');
-        setTimeout(onExit, 180);
-      } else setX(0);
+        desk.style.transform = 'translateY(100%)';
+        setTimeout(() => {
+          save(ENV_KEY, 'personal');
+          // Hide without animating back up across the screen
+          desk.style.transition = 'none';
+          onExit();
+          desk.style.transform = '';
+          void desk.offsetWidth;
+          desk.style.transition = '';
+        }, 280);
+      } else {
+        desk.style.transform = '';
+        setTimeout(() => { desk.style.transition = ''; }, 280);
+      }
     };
-    knob.addEventListener('pointerup', release);
-    knob.addEventListener('pointercancel', release);
+    desk.addEventListener('touchend', release, { passive: true });
+    desk.addEventListener('touchcancel', release, { passive: true });
   }
 
   return {
     element: desk,
     open() {
       save(ENV_KEY, 'work');
-      knob.style.transform = '';
       screen.classList.remove('wd-poweron');
       void screen.offsetWidth;            // restart power-on animation
       screen.classList.add('wd-poweron');
