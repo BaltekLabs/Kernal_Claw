@@ -47,19 +47,44 @@ data class SkillDef(
 class SkillRegistry {
     private val skills = mutableListOf<SkillDef>()
 
+    companion object {
+        /**
+         * Tools every skill keeps. A skill narrows the toolset to stay focused, but
+         * requests routinely cross skills ("add a task to call Mike" routes to
+         * communication) — without these the agent claims it can't add a task.
+         */
+        val CORE_TOOLS = setOf(
+            "add_task", "list_tasks", "update_task", "complete_task",
+            "remember", "recall",
+            "read_calendar", "create_event", "set_alarm", "set_timer",
+            "launch_app", "web_search", "search_contacts",
+            "get_conversations", "context_search"
+        )
+    }
+
     fun register(vararg defs: SkillDef) { skills.addAll(defs) }
 
     /**
      * Match skill by counting trigger-word hits — mirrors engine.py skill.match().
-     * Returns null if no trigger words match.
+     * Triggers must start at a word boundary, so "call" doesn't fire on "recall"
+     * and "text" doesn't fire on "context". Returns null if no trigger words match.
      */
     fun match(input: String): SkillDef? {
         val lower = input.lowercase()
         return skills
-            .associateWith { skill -> skill.triggerWords.count { lower.contains(it) } }
+            .associateWith { skill -> skill.triggerWords.count { hits(lower, it) } }
             .filter { (_, hits) -> hits > 0 }
             .maxByOrNull { (_, hits) -> hits }
             ?.key
+    }
+
+    private fun hits(text: String, trigger: String): Boolean {
+        var i = text.indexOf(trigger)
+        while (i >= 0) {
+            if (i == 0 || !text[i - 1].isLetterOrDigit()) return true
+            i = text.indexOf(trigger, i + 1)
+        }
+        return false
     }
 
     fun list(): List<Map<String, String>> =
@@ -171,7 +196,7 @@ class AgentEngine(
 
         // ── Tool filtering (port of engine.py skill tool filtering) ──
         val toolDefs = if (skill != null && skill.toolNames.isNotEmpty()) {
-            val allowed = skill.toolNames.toSet()
+            val allowed = skill.toolNames.toSet() + SkillRegistry.CORE_TOOLS
             allToolDefs.filter { it.name in allowed }
         } else {
             allToolDefs
