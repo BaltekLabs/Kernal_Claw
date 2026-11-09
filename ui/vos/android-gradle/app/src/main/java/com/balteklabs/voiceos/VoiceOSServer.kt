@@ -40,7 +40,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Calendar
 
-class VoiceOSServer(
+// open: the Mosaic launcher (ui/mosaic) subclasses this to add its own routes.
+open class VoiceOSServer(
     private val context: Context,
     port: Int
 ) : NanoHTTPD(port) {

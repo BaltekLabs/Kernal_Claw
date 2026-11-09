@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <title>Mosaic</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Status strip -->
+  <div id="statusbar">
+    <span id="sb-agent" class="sb-agent" hidden></span>
+    <span class="sb-spacer"></span>
+    <span id="sb-battery"></span>
+    <span id="sb-time"></span>
+  </div>
+
+  <!-- Start ⇄ app list: a two-page horizontal pager -->
+  <div id="pager">
+    <section class="page" id="start-page">
+      <div id="start-scroll" class="scroll">
+        <div id="grid"></div>
+        <button id="to-apps" class="round-btn" aria-label="All apps">
+          <svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+      <!-- Edit-mode app bar -->
+      <div id="edit-bar" class="appbar">
+        <button data-act="add"><i class="ab-ico"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></i><span>add tile</span></button>
+        <button data-act="done"><i class="ab-ico"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></i><span>done</span></button>
+      </div>
+    </section>
+
+    <section class="page" id="apps-page">
+      <div class="apps-head">
+        <div class="search">
+          <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>
+          <input id="app-search" type="text" placeholder="search apps or ask" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <div id="apps-scroll" class="scroll"><div id="app-list"></div></div>
+      <div id="jump-list" class="overlay"><div class="jump-grid"></div></div>
+    </section>
+  </div>
+
+  <!-- Full-screen panels (pivot pages) -->
+  <div id="panel" class="panel" aria-hidden="true">
+    <div class="panel-inner">
+      <div class="panel-app" id="panel-app">MOSAIC</div>
+      <div class="pivots" id="panel-pivots"></div>
+      <div class="panel-body scroll" id="panel-body"></div>
+      <div class="appbar panel-bar" id="panel-bar"></div>
+    </div>
+  </div>
+
+  <!-- Context menu (long-press in app list, etc.) -->
+  <div id="ctx" class="overlay"><div class="ctx-menu" id="ctx-menu"></div></div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

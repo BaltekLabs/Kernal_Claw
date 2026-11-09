@@ -28,6 +28,13 @@ Multi-platform UI with a shared architecture:
 - **Event bus** (`src/core/event/event_bus.py`): async priority-based pub/sub used throughout
 - **Multi-provider LLM** (`src/llm/providers/`): hot-swappable Ollama, OpenAI, Anthropic, Groq
 
+### Mosaic (`ui/mosaic/`)
+Personal-phone launcher with a Windows Phone–style live-tile Start screen. It shares
+the VoiceOS Kotlin backend: its Gradle build compiles `ui/vos/android-gradle/app/src/main/java`
+directly, and `MosaicServer` subclasses `VoiceOSServer` (port 8742, app id
+`com.balteklabs.mosaic`). Only the web UI (`assets/web/`) and a thin Android shell are Mosaic's own.
+See `ui/mosaic/README.md`. Build: `cd ui/mosaic/android-gradle && ./gradlew assembleDebug`.
+
 ## Build Commands
 
 ### Android APK (primary active development target)

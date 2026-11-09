@@ -1,0 +1,67 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+// Mosaic reuses the VoiceOS agent backend (agent loop, tools, tasks, CRM, comms,
+// heartbeat) straight from the VoiceOS source tree instead of forking it.
+// VoiceOS's own MainActivity compiles in as dead code; Mosaic's manifest only
+// registers MosaicActivity. The R namespace stays com.balteklabs.voiceos so
+// that shared code (and its layout/id references) still resolves.
+def voiceosSrc = '../../../vos/android-gradle/app/src/main/java'
+
+android {
+    namespace 'com.balteklabs.voiceos'
+    compileSdk 33
+
+    defaultConfig {
+        // Separate app id: installs side by side with VoiceOS.
+        applicationId "com.balteklabs.mosaic"
+        minSdk 24
+        targetSdk 33
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs += voiceosSrc
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    lint {
+        disable 'QueryAllPackagesPermission'
+    }
+
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE', 'META-INF/NOTICE']
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.10.1'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
+    implementation 'com.google.code.gson:gson:2.10.1'
+}
