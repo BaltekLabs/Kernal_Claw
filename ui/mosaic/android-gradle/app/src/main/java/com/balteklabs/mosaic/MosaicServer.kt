@@ -20,6 +20,25 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
 
     private val gson = Gson()
 
+    init { applyFirstRunDefaults() }
+
+    /**
+     * VoiceOS starts on Ollama; Mosaic starts on Claude. Applied once per install
+     * (Mosaic has its own prefs, separate from VoiceOS), so a later choice made in
+     * the model picker always sticks.
+     */
+    private fun applyFirstRunDefaults() {
+        val prefs = ctx.getSharedPreferences("voiceos", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("mosaic_defaults_v1", false)) return
+        val edit = prefs.edit().putBoolean("mosaic_defaults_v1", true)
+        if (prefs.getString("provider", "ollama") == "ollama") {
+            edit.putString("provider", "anthropic")
+                .putString("model", "claude-opus-5-5")
+                .putString("model_fast_anthropic", "claude-haiku-5-5")
+        }
+        edit.apply()
+    }
+
     override fun serve(session: IHTTPSession): Response =
         if (session.uri == "/api/glance") glance() else super.serve(session)
 

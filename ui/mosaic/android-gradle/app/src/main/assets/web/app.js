@@ -54,6 +54,7 @@ initGrid({
 });
 initPanels(ctx);
 initAgent({
+  onPickModel: () => openPanel('model', { back: 'agent' }),
   onAnswer: (tileId, text) => {
     const t = getLayout().tiles.find(x => x.id === tileId);
     if (t) { t.lastAnswer = text; saveLayout(getLayout()); refreshContent(); }

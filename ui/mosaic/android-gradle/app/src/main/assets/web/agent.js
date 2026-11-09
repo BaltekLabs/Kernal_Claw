@@ -9,8 +9,9 @@
  * Agent mode turns on the server heartbeat (autonomous probes); its findings
  * surface on the agent tile and in the conversation.
  */
-import { store, emit, send, load, save, esc, toast, refresh } from './store.js';
+import { store, emit, subscribe, send, load, save, esc, toast, refresh } from './store.js';
 import { icon } from './icons.js';
+import { PROVIDERS, modelName } from './models.js';
 
 const PREFS = 'mosaic-prefs';
 export const prefs = Object.assign({ agentMode: false, speak: false }, load(PREFS, {}));
@@ -20,9 +21,13 @@ const convo = load('mosaic-convo', []);      // [{ role: 'u'|'a'|'n', text, chip
 let view = null;                               // { body, input, mic } while the pane is open
 let busy = false;
 let onAnswer = () => {};
+let onPickModel = () => {};
 
 export function initAgent(opts) {
   onAnswer = opts.onAnswer || onAnswer;
+  onPickModel = opts.onPickModel || onPickModel;
+  // Keep the model chip current while the pane is open.
+  subscribe(key => { if (key === 'status' && view && !busy) renderConvo(); });
   setAgentMode(prefs.agentMode, true);
 }
 
@@ -72,7 +77,10 @@ function handleLine(reply, line) {
 function done(reply, tileId) {
   busy = false;
   reply.text = reply.text.replace(/╔═.*?╚═[^\n]*/gs, '').trim() || '(no reply)';
-  updateReply(reply);
+  // Provider rejected the request (missing/bad key, unknown model): point at the picker.
+  if (/api key not set|authentication_error|invalid.{0,10}(api.?)?key|not_found_error|model_not_found|incorrect api key/i.test(reply.text))
+    convo.push({ role: 'n', text: 'That looks like a model or API key problem. Tap the model name above to fix it.' });
+  renderConvo();
   persist();
   store.agent.last = reply.text.slice(0, 220);
   if (!view) store.agent.unseen = (store.agent.unseen || 0) + 1;
@@ -189,6 +197,7 @@ export function mountAgent(body, bar, initial) {
     const s = e.target.closest('[data-suggest]');
     if (s) ask(s.dataset.suggest);
     if (e.target.closest('[data-a="clear"]')) clearConversation();
+    if (e.target.closest('[data-a="model"]')) onPickModel();
   };
 
   renderConvo();
@@ -205,9 +214,16 @@ export function unmountAgent() {
 
 function renderConvo() {
   if (!view) return;
+  const st = store.status || {};
+  const prov = PROVIDERS[st.active_provider];
+  const needsKey = prov?.needsKey && st.has_key === false;
   const head = `
     <div class="agent-head"><div class="ring ${store.agent.state}"></div>
-      <div class="hint">${convo.length ? 'what else?' : 'hi — what can I do for you?'}</div></div>`;
+      <div class="hint">${convo.length ? 'what else?' : 'hi — what can I do for you?'}</div></div>
+    <button class="model-chip" data-a="model">${esc(modelName(st.active_model))}
+      <span>${esc(prov?.label || st.active_provider || '')} ▾</span></button>
+    ${needsKey ? `<div class="msg-n">Add your ${esc(prov.label)} API key to start.
+      <button class="btn accent" data-a="model">set up</button></div>` : ''}`;
   const items = convo.map((m, i) => msgHtml(m, i)).join('');
   const tail = convo.length
     ? `<button class="btn" data-a="clear" style="margin-top:16px">new conversation</button>`

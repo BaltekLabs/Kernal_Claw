@@ -11,6 +11,7 @@
  *   anim:  'slide' (default) or 'flip'
  */
 import { icon } from './icons.js';
+import { modelName } from './models.js';
 import { store, esc, ago, clockTime, dayLabel, initialsOf, appsNow } from './store.js';
 
 const glyph = name => `<div class="glyph">${icon(name)}</div>`;
@@ -46,6 +47,8 @@ export const CATALOG = {
       return out;
     },
     count: () => store.agent.unseen || 0,
+    label: tile => tile.size === 'w' || tile.size === 'l'
+      ? `ask mosaic · ${modelName(store.status?.active_model).toLowerCase()}` : 'ask mosaic',
     open: (t, ctx) => ctx.panel('agent'),
   },
 

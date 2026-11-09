@@ -37,6 +37,20 @@ interface built around tiles instead of the nodal-net canvas.
 | shortcut | Last answer | Runs its saved prompt |
 | any app | App icon | Launches the app |
 
+### Choosing the model
+
+Mosaic starts on **Claude Opus 5.5**, with **Haiku 5.5** for quick questions
+(VoiceOS starts on Ollama). Tap the model name at the top of Ask Mosaic, or go to
+Settings → ai, to switch. There's a tab for each provider (claude, openai, grok,
+ollama) where you can:
+
+- pick a model, or type in any other model ID
+- choose the cheaper model that handles quick questions
+- paste and test your API key
+- for Ollama, set the server address and choose from the models installed on it
+
+If a reply looks like a key or model error, Ask Mosaic points you back to the picker.
+
 Turning on **agent mode** in settings starts the VoiceOS heartbeat. The agent
 then checks in on its own and posts what it notices to the agent tile.
 

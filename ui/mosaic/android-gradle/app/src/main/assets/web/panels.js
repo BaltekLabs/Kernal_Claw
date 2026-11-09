@@ -12,6 +12,7 @@ import { store, subscribe, send, getJSON, refresh, esc, ago, clockTime, dayLabel
          appsNow, getApps, toast } from './store.js';
 import { icon } from './icons.js';
 import { CATALOG, PALETTE, newId, defaultLayout } from './catalog.js';
+import { PROVIDERS, modelName } from './models.js';
 import { mountAgent, unmountAgent, prefs, savePrefs, setAgentMode } from './agent.js';
 
 let el, appEl, pivotsEl, bodyEl, barEl;
@@ -50,7 +51,8 @@ export function openPanel(name, opts = {}) {
   const def = PANELS[name];
   if (!def) return;
   if (current) teardown();
-  current = { name, def, opts, pivot: opts.pivot || def.pivots?.[0] };
+  def.onOpen?.(opts);
+  current = { name, def, opts, pivot: opts.pivot || def.startPivot?.() || def.pivots?.[0] };
   el.classList.remove('closing');
   el.classList.add('show');
   el.setAttribute('aria-hidden', 'false');
@@ -87,10 +89,13 @@ function teardown() {
 
 function drawPivots() {
   const d = current.def;
-  const heads = d.pivots || [d.title];
+  // Windows Phone pivot: the current header always leads, the rest follow in a loop.
+  let heads = d.pivots || [d.title];
+  const i = heads.indexOf(current.pivot);
+  if (i > 0) heads = [...heads.slice(i), ...heads.slice(0, i)];
   pivotsEl.innerHTML = heads.map(p =>
     `<button data-pivot="${p}" class="${!d.pivots || p === current.pivot ? 'on' : ''}">${p}</button>`).join('');
-  pivotsEl.querySelector('.on')?.scrollIntoView({ inline: 'start', block: 'nearest' });
+  pivotsEl.scrollLeft = 0;
 }
 
 function setPivot(p) {
@@ -138,6 +143,21 @@ function commsRow(e) {
       <div class="t2">${esc(e.channel)} · ${ago(e.time)}</div><div class="t3">${what}</div></div>${acts}</div>`;
 }
 
+// Model picker state (per panel session).
+let keyState = null, keysLoading = false, ollamaModels = null;
+const fastPick = {};
+const providerFor = label => Object.keys(PROVIDERS).find(k => PROVIDERS[k].label === label) || label;
+async function loadKeys() {
+  if (keysLoading) return;
+  keysLoading = true;
+  const ks = await Promise.all(Object.keys(PROVIDERS).map(p => getJSON(`/api/keys?provider=${p}`, {})));
+  const next = {};
+  Object.keys(PROVIDERS).forEach((p, i) => { next[p] = !!ks[i].has_key; });
+  keyState = next;
+  keysLoading = false;
+  if (current?.name === 'model') draw();
+}
+
 async function call(n) { const r = await send('/api/call', { number: n }); if (r.error) toast(r.error); }
 async function sms(n)  { const r = await send('/api/sms', { number: n });  if (r.error) toast(r.error); }
 
@@ -145,7 +165,7 @@ async function sms(n)  { const r = await send('/api/sms', { number: n });  if (r
 const PANELS = {
 
   agent: {
-    title: 'ask',
+    title: 'ask', refreshOn: ['status'],
     mount: (body, bar, opts) => mountAgent(body, bar, opts),
     unmount: unmountAgent,
   },
@@ -395,6 +415,99 @@ const PANELS = {
     },
   },
 
+  // Model picker: one pivot per provider. Opened from Ask Mosaic's model chip
+  // and from Settings → ai; goes back to wherever it came from.
+  model: {
+    app: 'ASK MOSAIC · MODEL', refreshOn: ['status'],
+    onOpen() { keyState = null; },
+    startPivot: () => PROVIDERS[store.status?.active_provider]?.label,
+    pivots: Object.values(PROVIDERS).map(p => p.label),
+    render(pivot, opts) {
+      const p = providerFor(pivot), def = PROVIDERS[p];
+      const s = store.status || {};
+      const live = s.active_provider === p;
+      if (!keyState) loadKeys();
+      const curFast = fastPick[p] || (live ? s.model_fast : def.fast[0]?.id);
+      const models = p === 'ollama' && ollamaModels
+        ? ollamaModels.map(id => ({ id, name: id, note: 'installed on your Ollama server' })) : def.main;
+
+      const rows = models.map(m => {
+        const on = live && s.active_model === m.id;
+        return `<button class="li${on ? ' done' : ''}" data-model="${esc(m.id)}">
+          <span class="check">${icon('check')}</span>
+          <span class="tx"><span class="t1" style="text-decoration:none;color:var(--fg)">${esc(m.name)}</span>
+          <span class="t3">${esc(m.note || m.id)}</span></span></button>`;
+      }).join('');
+      const custom = !models.some(m => m.id === s.active_model) && live
+        ? `<div class="note">In use: <b>${esc(s.active_model)}</b></div>` : '';
+      const fast = def.fast.length ? `
+        <div class="sec">for quick questions</div>
+        <div class="note" style="padding-top:0">Simple asks go to a cheaper, faster model.</div>
+        ${def.fast.map(f => `<button class="btn${f.id === curFast ? ' on' : ''}" data-fast="${esc(f.id)}">${esc(f.name)}</button>`).join('')}` : '';
+      const has = keyState?.[p];
+      const key = def.needsKey ? `
+        <div class="sec">api key</div>
+        <div class="note" style="padding-top:0">${keyState == null ? 'Checking…' : has ? 'A key is saved for ' + esc(def.label) + '.' : 'Needed before ' + esc(def.label) + ' can answer.'}</div>
+        <label class="field"><input id="m-key" type="password" placeholder="${has ? 'paste to replace' : 'paste your key'}" autocomplete="off"></label>
+        <button class="btn accent" data-a="save-key">save key</button>${has ? '<button class="btn" data-a="test-key">test</button>' : ''}` : '';
+      const ollama = p === 'ollama' ? `
+        <div class="sec">server</div>
+        <label class="field"><input id="m-url" type="text" value="${esc(s.ollama_url || '')}" placeholder="http://192.168.1.10:11434"></label>
+        <button class="btn" data-a="test-ollama">test connection</button>` : '';
+      return `${live ? '<div class="note">In use now.</div>' : ''}
+        <div class="sec">model</div>${rows}${custom}
+        <label class="field" style="display:flex;gap:8px"><input id="m-custom" type="text" placeholder="other model id" autocomplete="off" spellcheck="false">
+          <button class="btn" data-a="custom" style="margin:0">use</button></label>
+        ${fast}${key}${ollama}`;
+    },
+    async click(e, opts) {
+      const p = providerFor(current.pivot), def = PROVIDERS[p];
+      const s = store.status || {};
+      const t = e.target;
+      const fastBtn = t.closest('[data-fast]');
+      if (fastBtn) {
+        fastPick[p] = fastBtn.dataset.fast;
+        if (s.active_provider === p) { await send('/api/provider', { provider: p, model_fast: fastPick[p] }); await refresh('status'); }
+        return draw();
+      }
+      const row = t.closest('[data-model]');
+      const a = t.closest('[data-a]')?.dataset.a;
+      let model = row?.dataset.model;
+      if (a === 'custom') model = bodyEl.querySelector('#m-custom').value.trim();
+      if (model) {
+        await send('/api/provider', { provider: p, model,
+          model_fast: fastPick[p] || def.fast[0]?.id || undefined });
+        await refresh('status');
+        if (def.needsKey && keyState && !keyState[p]) { toast(`Add your ${def.label} key below to start`); return draw(); }
+        toast(`Now using ${modelName(model)}`);
+        return openPanel(opts.back || 'agent');
+      }
+      if (a === 'save-key') {
+        const key = bodyEl.querySelector('#m-key').value.trim();
+        if (!key) return toast('Paste a key first');
+        await send('/api/keys', { provider: p, key });
+        keyState = { ...keyState, [p]: true };
+        await refresh('status');
+        const r = await getJSON(`/api/keys/test?provider=${p}`, {});
+        toast(r.ok ? 'Key saved and working' : `Key saved, but the test failed: ${r.error || 'unknown error'}`, 4000);
+        return draw();
+      }
+      if (a === 'test-key') {
+        const r = await getJSON(`/api/keys/test?provider=${p}`, {});
+        return toast(r.ok ? `${def.label} key works` : `Key test failed: ${r.error || 'unknown error'}`, 4000);
+      }
+      if (a === 'test-ollama') {
+        const url = bodyEl.querySelector('#m-url').value.trim();
+        if (url) await send('/api/provider', { ollama_url: url });   // keeps the current provider
+        const r = await getJSON('/api/ollama/test', {});
+        if (r.ok) { ollamaModels = r.models || []; toast(`Connected — ${ollamaModels.length} models installed`); }
+        else toast(`Can’t reach Ollama: ${r.error || 'no response'}`, 4000);
+        await refresh('status');
+        return draw();
+      }
+    },
+  },
+
   settings: {
     pivots: ['start', 'agent', 'ai'], refreshOn: ['status'],
     render(pivot) {
@@ -415,27 +528,13 @@ const PANELS = {
         <div class="sec">permissions</div>
         <button class="btn" data-a="notif">notification access</button>`;
       const s = store.status || {};
-      const prov = s.active_provider || 'ollama';
-      const models = { ollama: 'mistral:latest', anthropic: 'claude-sonnet-4-6', openai: 'gpt-4o-mini', grok: 'grok-4.20-0309-non-reasoning' };
+      const prov = PROVIDERS[s.active_provider]?.label || s.active_provider || '—';
       return `
-        <div class="note">Now using <b>${esc(prov)}</b> · ${esc(s.active_model || '')}${prov !== 'ollama' ? (s.has_key ? ' · key saved' : ' · <b>no key</b>') : ''}</div>
-        <label class="field"><span>provider</span><select id="ai-prov">${Object.keys(models).map(p =>
-          `<option value="${p}" ${p === prov ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
-        <label class="field"><span>model</span><input id="ai-model" type="text" value="${esc(s.active_model || models[prov])}"></label>
-        <label class="field" id="ai-key-row"><span>api key</span><input id="ai-key" type="password" placeholder="${s.has_key ? 'saved — enter to replace' : 'paste key'}"></label>
-        <label class="field" id="ai-url-row"><span>ollama url</span><input id="ai-url" type="text" value="${esc(s.ollama_url || '')}"></label>
-        <button class="btn accent" data-a="save-ai">save</button>`;
-    },
-    after(body) {
-      const sel = body.querySelector('#ai-prov');
-      if (!sel) return;
-      const models = { ollama: 'mistral:latest', anthropic: 'claude-sonnet-4-6', openai: 'gpt-4o-mini', grok: 'grok-4.20-0309-non-reasoning' };
-      const sync = () => {
-        body.querySelector('#ai-key-row').hidden = sel.value === 'ollama';
-        body.querySelector('#ai-url-row').hidden = sel.value !== 'ollama';
-      };
-      sel.onchange = () => { body.querySelector('#ai-model').value = models[sel.value]; sync(); };
-      sync();
+        <div class="sec">answering with</div>
+        <div class="li"><div class="tx"><div class="t1">${esc(modelName(s.active_model))}</div>
+          <div class="t2">${esc(prov)}${s.model_fast ? ` · quick questions: ${esc(modelName(s.model_fast))}` : ''}</div>
+          ${PROVIDERS[s.active_provider]?.needsKey && !s.has_key ? '<div class="t3">No API key saved yet.</div>' : ''}</div></div>
+        <button class="btn accent" data-a="pick-model">choose model</button>`;
     },
     async click(e) {
       const sw = e.target.closest('[data-accent]');
@@ -446,14 +545,7 @@ const PANELS = {
       if (a === 'mode') { setAgentMode(!prefs.agentMode); draw(); }
       if (a === 'speak') { prefs.speak = !prefs.speak; savePrefs(); draw(); }
       if (a === 'notif') send('/api/notifications/settings');
-      if (a === 'save-ai') {
-        const q = s => bodyEl.querySelector(s).value.trim();
-        const provider = q('#ai-prov');
-        await send('/api/provider', { provider, model: q('#ai-model'), ollama_url: provider === 'ollama' ? q('#ai-url') || undefined : undefined });
-        if (provider !== 'ollama' && q('#ai-key')) await send('/api/keys', { provider, key: q('#ai-key') });
-        await refresh('status');
-        toast('AI settings saved');
-      }
+      if (a === 'pick-model') openPanel('model', { back: 'settings' });
     },
   },
 };
