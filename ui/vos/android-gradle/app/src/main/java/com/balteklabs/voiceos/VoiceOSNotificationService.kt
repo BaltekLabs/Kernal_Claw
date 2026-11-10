@@ -47,7 +47,10 @@ class VoiceOSNotificationService : NotificationListenerService() {
                 "app"   to appName,
                 "title" to title,
                 "text"  to text,
-                "time"  to sbn.postTime
+                "time"  to sbn.postTime,
+                // Android's own type (msg, email, call, missed_call, event, social…) — Mosaic sorts by it
+                "category" to (sbn.notification.category ?: ""),
+                "summary"  to ((sbn.notification.flags and android.app.Notification.FLAG_GROUP_SUMMARY) != 0)
             ))
         }
 

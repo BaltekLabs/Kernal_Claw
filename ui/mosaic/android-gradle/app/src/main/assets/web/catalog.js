@@ -12,6 +12,7 @@
  */
 import { icon } from './icons.js';
 import { modelName } from './models.js';
+import { messages, calls, notifications, notifType } from './inbox.js';
 import { store, esc, ago, clockTime, dayLabel, initialsOf, appsNow } from './store.js';
 
 const glyph = name => `<div class="glyph">${icon(name)}</div>`;
@@ -24,10 +25,9 @@ const prioRank = { high: 0, medium: 1, normal: 1, low: 2 };
 const sortedTasks = () => pendingTasks().slice()
   .sort((a, b) => (prioRank[a.priority] ?? 1) - (prioRank[b.priority] ?? 1));
 const followups = () => store.followups?.contacts || [];
-const comms = () => store.glance?.comms || { recent: [] };
-const msgs = () => comms().recent.filter(e => e.channel !== 'Call' && e.dir !== 'out');
-const calls = () => comms().recent.filter(e => e.channel === 'Call');
-const notifs = () => (store.notifs?.notifications || []);
+const comms = () => store.glance?.comms || {};
+const msgs = () => messages().filter(e => e.dir !== 'out');
+const notifs = () => notifications().filter(n => notifType(n) !== 'calls');
 
 export const CATALOG = {
 
@@ -94,7 +94,7 @@ export const CATALOG = {
          <div class="t-fill"></div><div class="t-dim">${esc(e.channel)} · ${ago(e.time)}</div>`)];
     },
     count: () => comms().unread || 0,
-    open: (t, ctx) => ctx.panel('comms', { pivot: 'messages' }),
+    open: (t, ctx) => ctx.panel('messages'),
   },
 
   phone: {
@@ -109,7 +109,7 @@ export const CATALOG = {
         <div class="t-fill"></div><div class="t-dim">${ago(c.time)} ago</div>`] : [front];
     },
     count: () => comms().missed || 0,
-    open: (t, ctx) => ctx.panel('comms', { pivot: 'calls' }),
+    open: (t, ctx) => ctx.panel('notifications', { pivot: 'calls' }),
   },
 
   people: {

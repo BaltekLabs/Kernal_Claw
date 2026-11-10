@@ -26,11 +26,11 @@ interface built around tiles instead of the nodal-net canvas.
 | ask mosaic | Agent state ring, latest heartbeat finding, last answer | Agent (voice or text) |
 | clock | Time and date | Agent: upcoming alarms |
 | calendar | Today's date, next events (flips) | Agenda |
-| messaging | Unread count, latest messages from SMS and chat apps | Messaging panel (all / messages / calls) |
-| phone | Missed calls | Calls |
+| messaging | Unread count, latest messages | Conversations from texts and chat apps (Signal, WhatsApp, RCS, DMs…). Tabs: all / unread / texts / one per chat app. Tap a conversation to see its latest messages |
+| phone | Missed calls | Notifications → calls |
 | people | Initials of people to follow up with | Follow-ups, and agent outreach suggestions |
 | tasks | Pending count, what's next | To do / done, add task |
-| notifications | Count, latest | List, dismiss, agent summary |
+| notifications | Count, latest | Tabs by type: all / messages / calls / email / other. Tap to open the app; dismiss, clear a tab, or have the agent summarize it |
 | approvals | Actions the agent queued for your OK | Approve / dismiss |
 | work | Work-profile app icons | Work apps panel (resume if paused) |
 | battery, settings | — | Settings: accent color, tile density, agent mode, AI provider |
@@ -50,6 +50,15 @@ ollama) where you can:
 - for Ollama, set the server address and choose from the models installed on it
 
 If a reply looks like a key or model error, Ask Mosaic points you back to the picker.
+
+### Messages vs. notifications
+
+Chat-app messages are captured from their notifications, so an app only shows up
+under Messaging once notification access is on and its notifications include the
+message text. For Signal, that's Settings → Notifications → Show → "Name and
+message". Notification types come from Android's own category, with the app's
+package name as a fallback. The notification list lives in memory, so it starts
+empty after the app restarts.
 
 Turning on **agent mode** in settings starts the VoiceOS heartbeat. The agent
 then checks in on its own and posts what it notices to the agent tile.

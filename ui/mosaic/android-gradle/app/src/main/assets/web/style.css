@@ -222,6 +222,14 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 .li .t2 { font-size: 14px; color: var(--accent); margin-top: 2px; }
 .li .t3 { font-size: 14px; color: var(--fg-2); margin-top: 2px; overflow: hidden;
           display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.li.unread .t1 { font-weight: 600; }
+.li.missed .sq { background: #a20025; }
+.thread { margin: -4px 0 10px 68px; padding-left: 10px; border-left: 2px solid var(--line);
+          font-size: 15px; line-height: 1.35; color: var(--fg-2); display: flex; flex-direction: column; gap: 6px; }
+.thread b { color: var(--fg); font-weight: 600; margin-right: 4px; }
+.thread .me b { color: var(--accent); }
+.thread span { color: var(--fg-3); font-size: 12px; margin-left: 4px; }
+.thread .btn { align-self: flex-start; margin-top: 2px; }
 .li .acts { display: flex; gap: 6px; flex: none; align-self: center; }
 .li .acts button { width: 38px; height: 38px; border: 2px solid var(--fg-2); border-radius: 50%;
                    display: flex; align-items: center; justify-content: center; }

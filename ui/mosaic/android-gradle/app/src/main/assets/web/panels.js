@@ -13,6 +13,7 @@ import { store, subscribe, send, getJSON, refresh, esc, ago, clockTime, dayLabel
 import { icon } from './icons.js';
 import { CATALOG, PALETTE, newId, defaultLayout } from './catalog.js';
 import { PROVIDERS, modelName } from './models.js';
+import { threads, messagePivots, channelOf, notifItems, NOTIF_PIVOTS } from './inbox.js';
 import { mountAgent, unmountAgent, prefs, savePrefs, setAgentMode } from './agent.js';
 
 let el, appEl, pivotsEl, bodyEl, barEl;
@@ -47,12 +48,15 @@ export function initPanels(c) {
 
 export const panelName = () => current?.name || null;
 
+/** A panel's pivots: a fixed list, or a function when they depend on live data. */
+const pivotsOf = d => (typeof d.pivots === 'function' ? d.pivots() : d.pivots);
+
 export function openPanel(name, opts = {}) {
   const def = PANELS[name];
   if (!def) return;
   if (current) teardown();
   def.onOpen?.(opts);
-  current = { name, def, opts, pivot: opts.pivot || def.startPivot?.() || def.pivots?.[0] };
+  current = { name, def, opts, pivot: opts.pivot || def.startPivot?.() || pivotsOf(def)?.[0] };
   el.classList.remove('closing');
   el.classList.add('show');
   el.setAttribute('aria-hidden', 'false');
@@ -90,16 +94,17 @@ function teardown() {
 function drawPivots() {
   const d = current.def;
   // Windows Phone pivot: the current header always leads, the rest follow in a loop.
-  let heads = d.pivots || [d.title];
+  const ps = pivotsOf(d);
+  let heads = ps || [d.title];
   const i = heads.indexOf(current.pivot);
   if (i > 0) heads = [...heads.slice(i), ...heads.slice(0, i)];
   pivotsEl.innerHTML = heads.map(p =>
-    `<button data-pivot="${p}" class="${!d.pivots || p === current.pivot ? 'on' : ''}">${p}</button>`).join('');
+    `<button data-pivot="${p}" class="${!ps || p === current.pivot ? 'on' : ''}">${p}</button>`).join('');
   pivotsEl.scrollLeft = 0;
 }
 
 function setPivot(p) {
-  if (!current?.def.pivots || p === current.pivot) return;
+  if (!current || !pivotsOf(current.def) || p === current.pivot) return;
   current.pivot = p;
   drawPivots(); draw();
   bodyEl.scrollTop = 0;
@@ -107,6 +112,10 @@ function setPivot(p) {
 
 function draw() {
   if (!current || current.def.mount) return;
+  // Live pivots can disappear (e.g. no more Signal messages) — fall back to the first.
+  const ps = pivotsOf(current.def);
+  if (ps && !ps.includes(current.pivot)) current.pivot = ps[0];
+  drawPivots();
   bodyEl.innerHTML = current.def.render(current.pivot, current.opts) || '';
   current.def.after?.(bodyEl, current.opts);
 }
@@ -115,11 +124,12 @@ function swipePivots() {
   let sx = 0, sy = 0, active = false;
   bodyEl.addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY; active = true; });
   bodyEl.addEventListener('pointerup', e => {
-    if (!active || !current?.def.pivots) return;
+    const ps = current && pivotsOf(current.def);
+    if (!active || !ps) return;
     active = false;
     const dx = e.clientX - sx, dy = e.clientY - sy;
     if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    const ps = current.def.pivots, i = ps.indexOf(current.pivot);
+    const i = ps.indexOf(current.pivot);
     setPivot(ps[(i + (dx < 0 ? 1 : ps.length - 1)) % ps.length]);
   });
   bodyEl.addEventListener('pointercancel', () => { active = false; });
@@ -131,16 +141,51 @@ const actBtn = (a, ic, data = '') => `<button data-a="${a}" ${data} aria-label="
 const empty = text => `<div class="note">${text}</div>`;
 const dataAttrs = obj => Object.entries(obj).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ');
 
-function commsRow(e) {
-  const what = e.channel === 'Call'
-    ? (e.dir === 'missed' ? 'missed call' : e.dir === 'in' ? 'incoming call' : 'outgoing call')
-    : esc(e.text);
-  const acts = e.number
-    ? `<div class="acts">${actBtn('call', 'phone', dataAttrs({ n: e.number }))}${actBtn('sms', 'sms', dataAttrs({ n: e.number }))}</div>` : '';
-  return `<div class="li" ${dataAttrs({ person: e.person })}>
-    ${sq(esc(initialsOf(e.person)))}
-    <div class="tx"><div class="t1">${esc(e.person)}${e.unread ? ' •' : ''}</div>
-      <div class="t2">${esc(e.channel)} · ${ago(e.time)}</div><div class="t3">${what}</div></div>${acts}</div>`;
+const callBack = n => n
+  ? `<div class="acts">${actBtn('call', 'phone', dataAttrs({ n }))}${actBtn('sms', 'sms', dataAttrs({ n }))}</div>` : '';
+const appIcon = (pkg, name) => {
+  const a = appsNow().find(x => x.package === pkg);
+  return a?.icon ? `<img src="data:image/jpeg;base64,${a.icon}" alt="">` : esc(initialsOf(name));
+};
+/** The installed app a chat channel came from ("signal" → Signal). */
+const chatApp = channel => appsNow().find(a => a.name.toLowerCase() === channel)
+  || appsNow().find(a => a.name.toLowerCase().includes(channel));
+
+// Messaging: one row per conversation; tap to see the latest messages.
+const openThreads = new Set();
+function threadRow(t, pivot) {
+  const evs = pivot === 'all' || pivot === 'unread' ? t.events : t.events.filter(e => channelOf(e) === pivot);
+  const last = evs[0];
+  const unread = evs.filter(e => e.unread).length;
+  const app = t.number ? null : chatApp(channelOf(last));
+  const acts = t.number ? callBack(t.number)
+    : app ? `<div class="acts">${actBtn('open-app', 'apps', dataAttrs({ pkg: app.package }))}</div>` : '';
+  const open = openThreads.has(t.key);
+  const lines = open ? `<div class="thread">${evs.slice(0, 6).map(e => `
+      <div class="${e.dir === 'out' ? 'me' : ''}"><b>${e.dir === 'out' ? 'you' : esc(e.group ? e.person : t.person)}</b> ${esc(e.text)}
+        <span>${ago(e.time)}</span></div>`).join('')}
+      <button class="btn" data-a="thread-ask" ${dataAttrs({ person: t.person })}>catch me up</button></div>` : '';
+  return `<div class="li${unread ? ' unread' : ''}" ${dataAttrs({ thread: t.key })}>
+    ${sq(esc(initialsOf(t.person)))}
+    <div class="tx"><div class="t1">${esc(t.person)}</div>
+      <div class="t2">${esc(last.channel === 'SMS' || last.channel === 'MMS' ? 'text' : last.channel)} · ${ago(last.time)}${unread ? ` · ${unread} new` : ''}</div>
+      <div class="t3">${last.dir === 'out' ? 'you: ' : ''}${esc(last.text)}</div></div>${acts}</div>${lines}`;
+}
+
+// Notifications: app notifications plus call-log entries.
+function notifRow(n) {
+  return `<div class="li" ${dataAttrs({ key: n.key, pkg: n.pkg })}>
+    ${sq(appIcon(n.pkg, n.app))}
+    <div class="tx"><div class="t1">${esc(n.title || n.app)}</div>
+      <div class="t2">${esc(n.app)} · ${ago(n.time)}</div><div class="t3">${esc(n.text)}</div></div>
+    <div class="acts">${actBtn('dismiss', 'close')}</div></div>`;
+}
+function callRow(c) {
+  const what = c.dir === 'missed' ? 'missed call' : c.dir === 'in' ? 'incoming call' : 'outgoing call';
+  return `<div class="li${c.dir === 'missed' ? ' missed' : ''}">
+    ${sq(icon('phone'))}
+    <div class="tx"><div class="t1">${esc(c.person)}</div><div class="t2">${what} · ${ago(c.time)}</div></div>
+    ${callBack(c.number)}</div>`;
 }
 
 // Model picker state (per panel session).
@@ -209,26 +254,35 @@ const PANELS = {
     },
   },
 
-  comms: {
-    app: 'MESSAGING', pivots: ['all', 'messages', 'calls'], refreshOn: ['glance'],
+  // Conversations only: texts plus chat apps (Signal, WhatsApp, RCS, DMs…).
+  // Pivots follow the apps you actually have messages from.
+  messages: {
+    app: 'MESSAGING', pivots: messagePivots, refreshOn: ['glance', 'apps'],
     bar: [{ a: 'catchup', icon: 'mic', label: 'catch me up' }, { a: 'refresh', icon: 'refresh', label: 'refresh' }],
     render(pivot) {
-      let ev = store.glance?.comms?.recent || [];
-      if (pivot === 'messages') ev = ev.filter(e => e.channel !== 'Call');
-      if (pivot === 'calls') ev = ev.filter(e => e.channel === 'Call');
-      return ev.length ? ev.map(commsRow).join('')
-        : empty('Nothing in the last few days. (Messages and calls need SMS and call-log permission.)');
+      let ts = threads();
+      if (pivot === 'unread') ts = ts.filter(t => t.unread);
+      else if (pivot !== 'all') ts = ts.filter(t => t.channels.includes(pivot));
+      if (ts.length) return ts.map(t => threadRow(t, pivot)).join('');
+      return empty(pivot === 'unread' ? 'No unread messages.'
+        : 'No messages this week. Texts need SMS permission. Chat apps like Signal and WhatsApp show up once notification access is on and their notifications show message text.');
     },
     click(e) {
       const b = e.target.closest('[data-a]');
-      if (b?.dataset.a === 'call') return call(b.dataset.n);
-      if (b?.dataset.a === 'sms') return sms(b.dataset.n);
-      const row = e.target.closest('[data-person]');
-      if (row) ctx.ask(`Catch me up on my recent conversation with ${row.dataset.person}. Is there anything I need to reply to?`);
+      const a = b?.dataset.a;
+      if (a === 'call') return call(b.dataset.n);
+      if (a === 'sms') return sms(b.dataset.n);
+      if (a === 'open-app') return ctx.launch({ package: b.dataset.pkg, profile: 'personal' });
+      if (a === 'thread-ask') return ctx.ask(`Catch me up on my recent conversation with ${b.dataset.person}. Is there anything I need to reply to?`);
+      const row = e.target.closest('[data-thread]');
+      if (!row) return;
+      const k = row.dataset.thread;
+      openThreads.has(k) ? openThreads.delete(k) : openThreads.add(k);
+      draw();
     },
     act(a) {
       if (a === 'refresh') refresh('glance');
-      if (a === 'catchup') ctx.ask('Catch me up on messages and calls I haven’t responded to. Who is waiting on me?');
+      if (a === 'catchup') ctx.ask('Catch me up on my messages. Who is waiting to hear back from me?');
     },
   },
 
@@ -291,33 +345,43 @@ const PANELS = {
   },
 
   notifications: {
-    pivots: ['recent'], refreshOn: ['notifs'],
-    bar: [{ a: 'sum', icon: 'mic', label: 'summarize' }, { a: 'clear', icon: 'trash', label: 'clear all' }],
-    render() {
-      const n = store.notifs || {};
-      if (!n.enabled) return `<div class="note">Mosaic needs notification access to show (and let the agent read) your notifications.</div>
-        <button class="btn accent" data-a="grant">grant access</button>`;
-      const list = n.notifications || [];
-      return list.length ? list.map(x => `
-        <div class="li" ${dataAttrs({ key: x.key })}>
-          ${sq(esc(initialsOf(x.app)))}
-          <div class="tx"><div class="t1">${esc(x.title || x.app)}</div>
-            <div class="t2">${esc(x.app)} · ${ago(x.time)}</div><div class="t3">${esc(x.text)}</div></div>
-          <div class="acts">${actBtn('dismiss', 'close')}</div></div>`).join('')
-        : empty('You’re all caught up.');
+    // Swipe by type. "calls" comes from the call log; the rest are app notifications.
+    pivots: NOTIF_PIVOTS, refreshOn: ['notifs', 'glance', 'apps'],
+    bar: [{ a: 'sum', icon: 'mic', label: 'summarize' }, { a: 'clear', icon: 'trash', label: 'clear' }],
+    render(pivot) {
+      const enabled = store.notifs?.enabled;
+      const grant = enabled || pivot === 'calls' ? ''
+        : `<div class="note">Mosaic needs notification access to show (and let the agent read) your notifications.</div>
+           <button class="btn accent" data-a="grant">grant access</button>`;
+      const items = notifItems(pivot);
+      if (items.length) return grant + items.map(i => i.kind === 'call' ? callRow(i.c) : notifRow(i.n)).join('');
+      if (grant) return grant;
+      return empty({ calls: 'No calls this week. (Needs call-log permission.)', email: 'No email notifications.',
+        messages: 'No message notifications.' }[pivot] || 'You’re all caught up.');
     },
     async click(e) {
-      const a = e.target.closest('[data-a]')?.dataset.a;
+      const b = e.target.closest('[data-a]');
+      const a = b?.dataset.a;
       if (a === 'grant') return send('/api/notifications/settings');
+      if (a === 'call') return call(b.dataset.n);
+      if (a === 'sms') return sms(b.dataset.n);
+      const row = e.target.closest('[data-key]');
       if (a === 'dismiss') {
-        await send('/api/notifications', { key: e.target.closest('[data-key]').dataset.key }, 'DELETE');
-        refresh('notifs');
+        await send('/api/notifications', { key: row.dataset.key }, 'DELETE');
+        return refresh('notifs');
       }
+      if (row?.dataset.pkg) ctx.launch({ package: row.dataset.pkg, profile: 'personal' });
     },
     async act(a) {
-      if (a === 'sum') ctx.ask('Summarize my recent notifications. What actually needs my attention?');
+      const pivot = current.pivot;
+      if (a === 'sum') ctx.ask({
+        messages: 'Go through my message notifications. Who needs a reply, and what should I say?',
+        calls:    'Who called me recently, and who should I call back?',
+        email:    'Summarize my recent email notifications. Anything important or time-sensitive?',
+      }[pivot] || 'Summarize my recent notifications. What actually needs my attention?');
       if (a === 'clear') {
-        await Promise.all((store.notifs?.notifications || []).map(x => send('/api/notifications', { key: x.key }, 'DELETE')));
+        const keys = notifItems(pivot).filter(i => i.kind === 'notif').map(i => i.n.key);
+        await Promise.all(keys.map(key => send('/api/notifications', { key }, 'DELETE')));
         refresh('notifs');
       }
     },

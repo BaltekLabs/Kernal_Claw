@@ -46,7 +46,7 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
         val data = mapOf(
             "battery"  to battery(),
             "calendar" to calendar(days = 7, limit = 20),
-            "comms"    to comms(days = 3, limit = 25)
+            "comms"    to comms(days = 7)
         )
         return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(data)).also {
             it.addHeader("Cache-Control", "no-cache")
@@ -90,25 +90,33 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
         out
     } catch (_: Exception) { emptyList() }   // permission not granted yet
 
-    private fun comms(days: Int, limit: Int): Map<String, Any> = try {
-        val events = CommsHub(ctx).events(System.currentTimeMillis() - days * 86_400_000L, 300)
+    /**
+     * Messages (SMS/MMS + chat apps captured from notifications — Signal, WhatsApp,
+     * RCS, DMs…) and calls, kept apart: messages feed the Messaging tile, calls
+     * the Phone tile and the Notifications "calls" pivot.
+     */
+    private fun comms(days: Int): Map<String, Any> = try {
+        val events = CommsHub(ctx).events(System.currentTimeMillis() - days * 86_400_000L, 600)
         val dayAgo = System.currentTimeMillis() - 86_400_000L
+        val (calls, messages) = events.partition { it.channel == "Call" }
         mapOf(
-            "unread" to events.count { it.unread },
-            "missed" to events.count { it.dir == CommsHub.Dir.MISSED && it.time > dayAgo },
-            "recent" to events.take(limit).map { e ->
-                mapOf(
-                    "person"  to e.person,
-                    "number"  to (e.number ?: ""),
-                    "channel" to e.channel,
-                    "dir"     to e.dir.name.lowercase(),
-                    "text"    to e.text.take(140),
-                    "time"    to e.time,
-                    "unread"  to e.unread
-                )
-            }
+            "unread"   to messages.count { it.unread },
+            "missed"   to calls.count { it.dir == CommsHub.Dir.MISSED && it.time > dayAgo },
+            "messages" to messages.take(150).map(::eventMap),
+            "calls"    to calls.take(40).map(::eventMap)
         )
     } catch (_: Exception) {
-        mapOf("unread" to 0, "missed" to 0, "recent" to emptyList<Any>())
+        mapOf("unread" to 0, "missed" to 0, "messages" to emptyList<Any>(), "calls" to emptyList<Any>())
     }
+
+    private fun eventMap(e: CommsHub.Event) = mapOf(
+        "person"  to e.person,
+        "number"  to (e.number ?: ""),
+        "channel" to e.channel,
+        "dir"     to e.dir.name.lowercase(),
+        "text"    to e.text.take(200),
+        "time"    to e.time,
+        "unread"  to e.unread,
+        "group"   to e.group
+    )
 }
