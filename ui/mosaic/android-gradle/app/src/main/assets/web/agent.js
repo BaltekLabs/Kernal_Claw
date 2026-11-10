@@ -88,7 +88,7 @@ function done(reply, tileId) {
   if (tileId) onAnswer(tileId, reply.text.slice(0, 220));
   if (prefs.speak) speak(reply.text);
   // Tools may have changed tasks, the queue, etc.
-  ['tasks', 'queue', 'followups'].forEach(refresh);
+  ['tasks', 'queue', 'crm'].forEach(refresh);
 }
 
 export function clearConversation() {

@@ -28,7 +28,7 @@ interface built around tiles instead of the nodal-net canvas.
 | calendar | Today's date, next events (flips) | Agenda |
 | messaging | Unread count, latest messages | Conversations from texts and chat apps (Signal, WhatsApp, RCS, DMs…). Tabs: all / unread / texts / one per chat app. Tap a conversation to see its latest messages |
 | phone | Missed calls | Notifications → calls |
-| people | Initials of people to follow up with | Follow-ups, and agent outreach suggestions |
+| people | Initials of people to follow up with | Everyone you keep up with. Search names, tags and numbers; tabs for all / follow up / out of touch / each relationship type. Tap a tag to filter by it. Each person has a contact card: call, text, follow-up bell, agent actions (draft a message, catch me up, suggest a plan, remind me), relationship, keep-in-touch frequency, how they're doing, tags, phone, birthday, notes, and recent messages and calls |
 | tasks | Pending count, what's next | To do / done, add task |
 | notifications | Count, latest | Tabs by type: all / messages / calls / email / other. Tap to open the app; dismiss, clear a tab, or have the agent summarize it |
 | approvals | Actions the agent queued for your OK | Approve / dismiss |

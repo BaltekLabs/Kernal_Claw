@@ -1897,8 +1897,18 @@ Start: introduce yourself in one sentence, then ask for their name."""
         (body["displayName"] as? String)?.let { entry["displayName"] = it }
         (body["phone"]       as? String)?.let { entry["phone"]       = it }
         (body["birthday"]    as? String)?.let { entry["birthday"]    = it }
-        (body["frequency"]   as? String)?.let { entry["frequency"]   = it }
-        (body["frequencyDays"] as? Double)?.let { entry["frequencyDays"] = it }
+        // A blank frequency clears it (frequencyDays 0 would otherwise read as always overdue).
+        (body["frequency"]   as? String)?.let {
+            if (it.isBlank()) { entry.remove("frequency"); entry.remove("frequencyDays") }
+            else entry["frequency"] = it
+        }
+        (body["frequencyDays"] as? Double)?.takeIf { it > 0 }?.let { entry["frequencyDays"] = it }
+        // Sentiment picker (same shape the log_sentiment tool stores); "" clears it.
+        (body["sentiment"] as? String)?.let { s ->
+            if (s.isBlank()) entry.remove("sentiment")
+            else entry["sentiment"] = mapOf("value" to s.lowercase(),
+                "ts" to java.text.SimpleDateFormat("MM/dd/yy", java.util.Locale.US).format(java.util.Date()))
+        }
         @Suppress("UNCHECKED_CAST")
         (body["tags"] as? List<*>)?.filterIsInstance<String>()?.let { entry["tags"] = it }
         // followUp: accept Boolean from JSON, or string "true"/"false" for robustness

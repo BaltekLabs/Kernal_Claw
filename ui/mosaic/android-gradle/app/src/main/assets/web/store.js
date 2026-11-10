@@ -38,7 +38,7 @@ const SOURCES = {
   tasks:     { url: '/api/tasks',         every: 30_000,  fallback: [] },
   queue:     { url: '/api/queue',         every: 20_000,  fallback: [] },
   notifs:    { url: '/api/notifications', every: 30_000,  fallback: { enabled: false, notifications: [] } },
-  followups: { url: '/api/crm/followups', every: 300_000, fallback: { contacts: [] } },
+  crm:       { url: '/api/crm/contacts',  every: 300_000, fallback: { contacts: [], total: 0 } },
   profiles:  { url: '/api/profiles',      every: 300_000, fallback: { has_work: false } },
   status:    { url: '/api/status',        every: 300_000, fallback: {} },
 };

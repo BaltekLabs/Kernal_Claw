@@ -24,7 +24,8 @@ const pendingTasks = () => (store.tasks || []).filter(t => t.status !== 'done');
 const prioRank = { high: 0, medium: 1, normal: 1, low: 2 };
 const sortedTasks = () => pendingTasks().slice()
   .sort((a, b) => (prioRank[a.priority] ?? 1) - (prioRank[b.priority] ?? 1));
-const followups = () => store.followups?.contacts || [];
+const followups = () => (store.crm?.contacts || []).filter(c => c.followUp)
+  .sort((a, b) => (b.daysSince ?? -1) - (a.daysSince ?? -1));
 const comms = () => store.glance?.comms || {};
 const msgs = () => messages().filter(e => e.dir !== 'out');
 const notifs = () => notifications().filter(n => notifType(n) !== 'calls');
@@ -116,7 +117,7 @@ export const CATALOG = {
 
   people: {
     title: 'people', glyph: 'people', sizes: ['w', 'm', 'l', 's'], defaultSize: 'w',
-    blurb: 'Relationships the agent thinks you should follow up on.',
+    blurb: 'Everyone you keep up with: tags, notes, follow-ups, and agent help reaching out.',
     faces(tile, size) {
       const f = followups();
       if (size === 's' || !f.length) return [centered(glyph('people'))];

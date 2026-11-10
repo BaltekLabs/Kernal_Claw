@@ -256,7 +256,7 @@ window.mosaicBack = () => {
 window.mosaicHome = () => {
   $('ctx').classList.remove('show');
   $('jump-list').classList.remove('show');
-  closePanel(); exitEdit(); goStart();
+  closePanel(true); exitEdit(); goStart();
   $('start-scroll').scrollTo({ top: 0, behavior: 'smooth' });
 };
 window.mosaicResume = () => { refreshAll(); statusBar(); };

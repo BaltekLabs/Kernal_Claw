@@ -238,6 +238,33 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 .thread .me b { color: var(--accent); }
 .thread span { color: var(--fg-3); font-size: 12px; margin-left: 4px; }
 .thread .btn { align-self: flex-start; margin-top: 2px; }
+.field textarea { width: 100%; padding: 8px 10px; background: #fff; color: #000; border: 2px solid #fff;
+                  outline: 0; font-size: 16px; border-radius: 0; resize: none; }
+.li .tx > span { display: block; }
+.li .tx > span.chips { display: flex; }
+.li.person .sq { position: relative; overflow: visible; }
+.li.person .flag { position: absolute; right: -6px; top: -6px; width: 22px; height: 22px; border-radius: 50%;
+                   background: #fff; color: var(--accent); display: flex; align-items: center; justify-content: center; }
+.li.person .flag svg { width: 14px; height: 14px; stroke-width: 2.4; }
+.li.person .chips { margin-top: 4px; }
+.t2.overdue { color: #fa6800; }
+.pc-head { display: flex; gap: 16px; align-items: center; padding: 6px 0 14px; }
+.pc-head .sq.big { width: 96px; height: 96px; background: var(--accent); display: flex; align-items: center;
+                   justify-content: center; font-size: 40px; font-weight: 300; flex: none; }
+.pc-name { font-size: 28px; font-weight: 300; line-height: 1.15; }
+.pc-head .t2 { font-size: 14px; color: var(--accent); margin-top: 4px; }
+.pc-head .t3 { font-size: 14px; color: var(--fg-2); }
+.pc-head .t2.overdue { color: #fa6800; }
+.pc-actions { display: flex; justify-content: space-between; padding: 4px 0 6px; }
+.pc-actions button { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; width: 60px; }
+.pc-actions button:active .ab-ico { background: #fff; color: #000; }
+.pc-actions button.on .ab-ico { background: var(--accent); border-color: var(--accent); }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { border: 1px solid var(--fg-2); padding: 5px 12px; font-size: 15px; display: inline-flex; align-items: center; gap: 6px; }
+.pill.on { background: var(--accent); border-color: var(--accent); }
+.pill.tag button { font-size: 18px; line-height: 1; padding: 0 2px; }
+.pill-input { border: 1px dashed var(--fg-3); background: none; padding: 5px 10px; font-size: 15px; width: 96px; outline: 0; }
+.pill-input:focus { border-color: var(--accent); }
 .li .acts { display: flex; gap: 6px; flex: none; align-self: center; }
 .li .acts button { width: 38px; height: 38px; border: 2px solid var(--fg-2); border-radius: 50%;
                    display: flex; align-items: center; justify-content: center; }

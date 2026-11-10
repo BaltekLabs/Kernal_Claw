@@ -13,6 +13,7 @@ import { store, subscribe, send, getJSON, refresh, esc, ago, clockTime, dayLabel
 import { icon } from './icons.js';
 import { CATALOG, PALETTE, newId, defaultLayout } from './catalog.js';
 import { PROVIDERS, modelName } from './models.js';
+import { createPeoplePanels } from './people.js';
 import { threads, messagePivots, channelOf, notifItems, NOTIF_PIVOTS } from './inbox.js';
 import { mountAgent, unmountAgent, prefs, savePrefs, setAgentMode } from './agent.js';
 
@@ -60,7 +61,7 @@ export function openPanel(name, opts = {}) {
   el.classList.remove('closing');
   el.classList.add('show');
   el.setAttribute('aria-hidden', 'false');
-  appEl.textContent = def.app || 'MOSAIC';
+  appEl.textContent = def.appTitle?.(opts) || def.app || 'MOSAIC';
   barEl.className = 'appbar panel-bar';
   barEl.innerHTML = '';
   barEl.onclick = null;
@@ -74,11 +75,15 @@ export function openPanel(name, opts = {}) {
     draw();
   }
   drawPivots();
+  bodyEl.scrollTop = 0;
   def.refreshOn?.forEach(refresh);
 }
 
-export function closePanel() {
+/** Back: return to the panel this one was opened from (opts.back); `all` closes everything. */
+export function closePanel(all = false) {
   if (!current) return;
+  const back = !all && current.opts?.back;
+  if (back && PANELS[back]) return openPanel(back, current.opts.backPivot ? { pivot: current.opts.backPivot } : {});
   teardown();
   current = null;
   el.classList.add('closing');
@@ -296,41 +301,6 @@ const PANELS = {
     act(a) {
       if (a === 'refresh') refresh('glance');
       if (a === 'catchup') ctx.ask('Catch me up on my messages. Who is waiting to hear back from me?');
-    },
-  },
-
-  people: {
-    pivots: ['follow up', 'reach out'], refreshOn: ['followups'],
-    bar: [{ a: 'import', icon: 'people', label: 'import contacts' }, { a: 'refresh', icon: 'refresh', label: 'refresh' }],
-    render(pivot) {
-      if (pivot === 'reach out') return `
-        <div class="note">Let the agent look across your messages, calls and notes and suggest who to get back in touch with.</div>
-        <button class="btn accent" data-a="suggest">suggest people</button>
-        <button class="btn" data-a="health">relationship check-in</button>`;
-      const f = store.followups?.contacts || [];
-      return f.length ? f.map(c => `
-        <div class="li" ${dataAttrs({ person: c.name })}>
-          ${sq(esc(initialsOf(c.name)))}
-          <div class="tx"><div class="t1">${esc(c.name)}</div>
-            <div class="t2">${c.daysSince >= 0 ? `${c.daysSince} days since you talked` : 'no recent contact'}</div>
-            ${c.type ? `<div class="t3">${esc(c.type)}</div>` : ''}</div>
-          ${c.phone ? `<div class="acts">${actBtn('call', 'phone', dataAttrs({ n: c.phone }))}${actBtn('sms', 'sms', dataAttrs({ n: c.phone }))}</div>` : ''}
-        </div>`).join('')
-        : empty('No follow-ups flagged. Ask the agent to “remind me to follow up with …”, or import your contacts.');
-    },
-    click(e) {
-      const b = e.target.closest('[data-a]');
-      const a = b?.dataset.a;
-      if (a === 'call') return call(b.dataset.n);
-      if (a === 'sms') return sms(b.dataset.n);
-      if (a === 'suggest') return ctx.ask('Who should I reach out to this week, and why? Suggest a short message for each.');
-      if (a === 'health') return ctx.ask('Give me a check-in on my relationships: who have I been neglecting?');
-      const row = e.target.closest('[data-person]');
-      if (row) ctx.ask(`Tell me about ${row.dataset.person} — our recent history and a good way to reach out.`);
-    },
-    async act(a) {
-      if (a === 'refresh') refresh('followups');
-      if (a === 'import') { toast('Importing contacts…'); const r = await send('/api/crm/import'); toast(r.message || 'Contacts imported'); refresh('followups'); }
     },
   },
 
@@ -626,3 +596,12 @@ const PANELS = {
     },
   },
 };
+
+// People list + contact card live in people.js.
+Object.assign(PANELS, createPeoplePanels({
+  ctx: () => ctx,
+  open: (name, opts) => openPanel(name, opts),
+  redraw: () => draw(),
+  pivot: () => current?.pivot,
+  body: () => bodyEl,
+}));
