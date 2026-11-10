@@ -244,8 +244,21 @@ const PANELS = {
       const a = e.target.closest('[data-a]')?.dataset.a;
       if (!row || !a) return;
       const t = store.tasks.find(x => x.id === row.dataset.task);
-      if (a === 'toggle') await send('/api/tasks', { id: t.id, status: t.status === 'done' ? 'pending' : 'done' }, 'PUT');
-      if (a === 'del') await send('/api/tasks', { id: t.id }, 'DELETE');
+      if (!t) return;
+      if (a === 'toggle') {
+        // Tick it right away; the row moves to the other pivot once the server agrees.
+        const status = t.status === 'done' ? 'pending' : 'done';
+        row.classList.toggle('done', status === 'done');
+        const [r] = await Promise.all([
+          send('/api/tasks', { id: t.id, status }, 'PUT'),
+          new Promise(ok => setTimeout(ok, 450)),     // let the tick be seen before the row leaves
+        ]);
+        if (r.error || r.status !== status) toast(`Couldn’t update the task${r.error ? `: ${r.error}` : ''}`);
+      }
+      if (a === 'del') {
+        const r = await send('/api/tasks', { id: t.id }, 'DELETE');
+        if (r.error) toast(`Couldn’t delete the task: ${r.error}`);
+      }
       refresh('tasks');
     },
     act(a) {

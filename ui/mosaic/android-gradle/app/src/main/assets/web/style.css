@@ -129,6 +129,14 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 #start-page.editing .tile:not(.selected) { transform: scale(.88); opacity: .55; }
 #start-page.editing .tile.selected { z-index: 5; touch-action: none; box-shadow: 0 6px 24px rgba(0,0,0,.6); }
 .tile.dragging { transition: width .32s, height .32s, transform .15s; z-index: 10 !important; opacity: .92; }
+.tile-action {
+  position: absolute; top: 8px; right: 8px; z-index: 3; width: 44px; height: 44px;
+  border: 2px solid #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+}
+.tile-action svg { width: 22px; height: 22px; stroke-width: 2; }
+.tile.m .tile-action { width: 38px; height: 38px; top: 6px; right: 6px; }
+.tile-action:active { background: #fff; color: var(--accent); }
+#start-page.editing .tile-action { display: none; }
 .tile-btn {
   position: absolute; width: 30px; height: 30px; border-radius: 50%; z-index: 6;
   background: #fff; color: #000; border: 2px solid #000;

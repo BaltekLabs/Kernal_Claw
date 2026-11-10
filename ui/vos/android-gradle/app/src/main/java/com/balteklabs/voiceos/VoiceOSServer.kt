@@ -4764,10 +4764,30 @@ done
 
     private fun parseBody(session: IHTTPSession): Map<String, Any> {
         return try {
-            val files = HashMap<String, String>()
-            session.parseBody(files)
+            // NanoHTTPD only puts the body in "postData" for POST. For PUT it saves the
+            // body to a temp file (path under "content"), and for DELETE it doesn't read
+            // the body at all, so those used to arrive empty (task updates, deletes and
+            // notification dismissals silently did nothing).
+            val json = when (session.method) {
+                Method.POST -> HashMap<String, String>().also { session.parseBody(it) }["postData"]
+                Method.PUT  -> HashMap<String, String>().also { session.parseBody(it) }["content"]
+                    ?.let { java.io.File(it).readText() }
+                else -> {
+                    val len = session.headers["content-length"]?.toIntOrNull() ?: 0
+                    if (len <= 0) null else {
+                        val buf = ByteArray(len)
+                        var off = 0
+                        while (off < len) {
+                            val n = session.inputStream.read(buf, off, len - off)
+                            if (n < 0) break
+                            off += n
+                        }
+                        String(buf, 0, off, Charsets.UTF_8)
+                    }
+                }
+            }
             @Suppress("UNCHECKED_CAST")
-            gson.fromJson(files["postData"] ?: "{}", Map::class.java) as Map<String, Any>
+            gson.fromJson(json?.takeIf { it.isNotBlank() } ?: "{}", Map::class.java) as Map<String, Any>
         } catch (_: Exception) { emptyMap() }
     }
 

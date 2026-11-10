@@ -125,6 +125,7 @@ function createTile(tile, i) {
   el.innerHTML = `
     <div class="faces"></div>
     <div class="label"></div><div class="count"></div>
+    <button class="tile-action" data-tile-act="" hidden></button>
     <button class="tile-btn unpin"  data-btn="unpin"  aria-label="Unpin">${icon('unpin')}</button>
     <button class="tile-btn resize" data-btn="resize" aria-label="Resize">${icon('resize')}</button>
     <button class="tile-btn color"  data-btn="color"  aria-label="Color">${icon('palette')}</button>`;
@@ -149,6 +150,16 @@ export function updateContent(el, tile) {
     box._cur = prev;
   }
   el.querySelector('.label').textContent = labelFor(tile);
+  // Optional one-tap action button (e.g. the agent tile's mic). Small tiles have
+  // no room for it; their whole face does the action instead.
+  const actBtn = el.querySelector('.tile-action');
+  const action = tile.size !== 's' && def.action;
+  actBtn.hidden = !action;
+  if (action && actBtn.dataset.tileAct !== action.name) {
+    actBtn.dataset.tileAct = action.name;
+    actBtn.setAttribute('aria-label', action.name);
+    actBtn.innerHTML = icon(action.icon);
+  }
   const n = def.count ? def.count(tile) : 0;
   el.querySelector('.count').textContent = n ? String(n) : '';
   const btn = el.querySelector('.tile-btn.resize');
@@ -245,7 +256,8 @@ function onDown(e) {
     return;
   }
 
-  press = { id: tile.id, el, tile, x: e.clientX, y: e.clientY, pid: e.pointerId };
+  press = { id: tile.id, el, tile, x: e.clientX, y: e.clientY, pid: e.pointerId,
+            action: e.target.closest('[data-tile-act]')?.dataset.tileAct || null };
   if (editing) {
     if (tile.id === selectedId) press.armed = true;
   } else {
@@ -284,7 +296,7 @@ function onUp(e) {
   if (p.held || p.moved) return;
   if (editing) { if (p.id !== selectedId) select(p.id); return; }
   // A real tap: open it once the tilt has eased back.
-  setTimeout(() => onOpen(p.tile), 60);
+  setTimeout(() => onOpen(p.tile, p.action), 60);
 }
 
 function onCancel() {

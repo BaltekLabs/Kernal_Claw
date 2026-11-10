@@ -50,7 +50,7 @@ const tileCtx = { ...ctx, panel: (name, opts) => openPanel(name, opts) };
 initGrid({
   gridEl: $('grid'), scrollEl: $('start-scroll'), pageEl: $('start-page'), layout,
   onSave: saveLayout,
-  onOpen: tile => CATALOG[tile.type].open(tile, tileCtx),
+  onOpen: (tile, action) => CATALOG[tile.type].open(tile, tileCtx, action),
 });
 initPanels(ctx);
 initAgent({

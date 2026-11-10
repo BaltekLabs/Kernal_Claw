@@ -33,14 +33,15 @@ export const CATALOG = {
 
   agent: {
     title: 'ask mosaic', glyph: 'mic', sizes: ['w', 'm', 's', 'l'], defaultSize: 'w',
-    blurb: 'Your agent. Tap to talk or type; it can act across the phone.',
+    blurb: 'Your agent. Tap the mic to talk, or the tile to type; it can act across the phone.',
+    action: { name: 'talk', icon: 'mic' },
     faces(tile, size) {
       const a = store.agent;
       const ring = `<div class="ring ${a.state}"></div>`;
       const front = size === 's' ? centered(ring)
         : { html: `<div style="display:flex;gap:14px;align-items:center;flex:1">${ring}
               <div><div class="t-big">${a.state === 'thinking' ? 'thinking…' : 'ask me'}</div>
-              <div class="t-dim">${size === 'm' ? '' : 'anything — tap to talk'}</div></div></div>` };
+              <div class="t-dim">${size === 'm' ? '' : 'anything — or tap the mic'}</div></div></div>` };
       const out = [front];
       if (size !== 's' && a.insight) out.push(`<div class="t-dim">noticed</div><div class="t-body">${esc(a.insight)}</div>`);
       if (size !== 's' && a.last) out.push(`<div class="t-dim">last answer</div><div class="t-body">${esc(a.last)}</div>`);
@@ -49,7 +50,8 @@ export const CATALOG = {
     count: () => store.agent.unseen || 0,
     label: tile => tile.size === 'w' || tile.size === 'l'
       ? `ask mosaic · ${modelName(store.status?.active_model).toLowerCase()}` : 'ask mosaic',
-    open: (t, ctx) => ctx.panel('agent'),
+    // Mic button (or anywhere on the small tile) → straight into listening.
+    open: (t, ctx, action) => ctx.panel('agent', action === 'talk' || t.size === 's' ? { listen: true } : {}),
   },
 
   clock: {
