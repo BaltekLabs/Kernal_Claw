@@ -12,7 +12,9 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
+import android.net.Uri
 import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -44,6 +46,10 @@ class MosaicActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private val appUrl = "http://127.0.0.1:$PORT"
     @Volatile private var serverStarting = false
+
+    // <input type="file"> (wallpaper photo): the WebView asks us to show a picker.
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private val FILE_REQUEST = 2001
 
     private val SPLASH_HTML = """
         <!DOCTYPE html><html><head>
@@ -133,6 +139,22 @@ class MosaicActivity : Activity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
                 runOnUiThread { request.grant(request.resources) }
+            }
+
+            override fun onShowFileChooser(
+                view: WebView,
+                callback: ValueCallback<Array<Uri>>,
+                params: FileChooserParams
+            ): Boolean {
+                fileCallback?.onReceiveValue(null)      // a picker can only be open once
+                fileCallback = callback
+                return try {
+                    startActivityForResult(params.createIntent(), FILE_REQUEST)
+                    true
+                } catch (_: android.content.ActivityNotFoundException) {
+                    fileCallback = null
+                    false
+                }
             }
         }
     }
@@ -231,6 +253,15 @@ class MosaicActivity : Activity() {
                 or View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             )
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == FILE_REQUEST) {
+            fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data))
+            fileCallback = null
+        }
     }
 
     override fun onPause() {

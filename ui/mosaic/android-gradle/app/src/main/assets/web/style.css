@@ -11,7 +11,7 @@
   --gutter: 12px;
   --gap: 6px;
   --status-h: 26px;
-  --font: 'Segoe UI', 'Selawik', 'Segoe WP', Roboto, 'Open Sans', system-ui, sans-serif;
+  --font: 'Segoe UI', 'Selawik', 'Segoe WP', system-ui, Roboto, sans-serif;
   --ease: cubic-bezier(.1,.9,.2,1);
 }
 
@@ -63,7 +63,7 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 .round-btn svg { width: 22px; height: 22px; stroke-width: 2; }
 
 .tile {
-  position: absolute; background: var(--accent); overflow: hidden; color: #fff;
+  position: absolute; background: var(--tc, var(--accent)); overflow: hidden; color: #fff;
   transition: left .32s var(--ease), top .32s var(--ease), width .32s var(--ease),
               height .32s var(--ease), transform .2s var(--ease), opacity .2s;
   transform-origin: center; touch-action: pan-y; contain: layout paint;
@@ -71,7 +71,6 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 }
 @keyframes tile-in { from { opacity: 0; transform: perspective(600px) rotateY(-60deg) translateX(-20px); } }
 .tile.pressed { transition: transform .08s; }
-.tile.app { background: var(--tile-bg, var(--accent)); }
 
 .faces { position: absolute; inset: 0; perspective: 600px; }
 .face {
@@ -355,3 +354,92 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ── Looks: glass and see-through ───────────────────────────── */
+/* Selawik: Microsoft's open-source Segoe UI fallback (OFL, fonts/Selawik-OFL.txt). */
+@font-face { font-family: 'Selawik'; src: url('/static/fonts/selawkl.woff2') format('woff2'); font-weight: 100 300; font-display: swap; }
+@font-face { font-family: 'Selawik'; src: url('/static/fonts/selawksl.woff2') format('woff2'); font-weight: 301 399; font-display: swap; }
+@font-face { font-family: 'Selawik'; src: url('/static/fonts/selawk.woff2') format('woff2'); font-weight: 400 500; font-display: swap; }
+@font-face { font-family: 'Selawik'; src: url('/static/fonts/selawksb.woff2') format('woff2'); font-weight: 501 900; font-display: swap; }
+
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+#wallpaper {
+  position: fixed; inset: 0; display: none;
+  background: var(--wp); background-size: cover; background-position: center;
+}
+#wallpaper::after { content: ''; position: absolute; inset: 0; background: rgba(0,0,0,var(--wp-dim, .25)); }
+[data-look="glass"] #wallpaper { display: block; }
+
+/* Sharper drawing in the modern looks: square ends, mitred corners, finer strokes. */
+[data-look="glass"] svg, [data-look="seethru"] svg { stroke-linecap: square; stroke-linejoin: miter; }
+[data-look="glass"] .tile .glyph svg, [data-look="seethru"] .tile .glyph svg { stroke-width: 1.15; }
+[data-look="glass"] .ab-ico, [data-look="seethru"] .ab-ico { border-width: 1.5px; }
+[data-look="glass"] .tile, [data-look="seethru"] .tile { text-shadow: 0 1px 2px rgba(0,0,0,.35); }
+[data-look="glass"] .t-huge, [data-look="seethru"] .t-huge { font-weight: 300; letter-spacing: -2px; }
+
+/* Glass: frosted, lit from the top-left, floating above the wallpaper. */
+[data-look="glass"] {
+  --chrome: rgba(16,18,26,.62);
+  --line: rgba(255,255,255,.18);
+}
+[data-look="glass"] body { background: #000; }
+[data-look="glass"] .tile {
+  background:
+    linear-gradient(155deg, rgba(255,255,255,.24) 0%, rgba(255,255,255,.05) 36%, rgba(255,255,255,0) 62%),
+    color-mix(in srgb, var(--tc, var(--accent)) 44%, rgba(8,10,18,.28));
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.5),
+              0 14px 30px -12px rgba(0,0,0,.7);
+}
+[data-look="glass"] .tile .initials span { background: rgba(255,255,255,.12); }
+[data-look="glass"] #statusbar { background: linear-gradient(rgba(0,0,0,.5), transparent); color: rgba(255,255,255,.85); }
+[data-look="glass"] .round-btn { background: rgba(255,255,255,.1); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+[data-look="glass"] .appbar, [data-look="glass"] .composer {
+  background: var(--chrome); -webkit-backdrop-filter: blur(24px) saturate(150%); backdrop-filter: blur(24px) saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14);
+}
+[data-look="glass"] .panel {
+  background: rgba(6,8,14,.66); -webkit-backdrop-filter: blur(30px) saturate(140%); backdrop-filter: blur(30px) saturate(140%);
+}
+[data-look="glass"] .apps-head { background: transparent; }
+[data-look="glass"] #apps-page::before {        /* keep the app list readable over busy wallpapers */
+  content: ''; position: absolute; inset: 0; background: rgba(0,0,0,.45);
+  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+}
+[data-look="glass"] .app-row .ico, [data-look="glass"] .li .sq, [data-look="glass"] .pc-head .sq.big {
+  background: color-mix(in srgb, var(--accent) 55%, rgba(255,255,255,.08));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.2), inset 0 1px 0 rgba(255,255,255,.4);
+}
+[data-look="glass"] .letter { background: rgba(255,255,255,.06); }
+[data-look="glass"] .ctx-menu { background: rgba(250,250,252,.88); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+[data-look="glass"] #toast {
+  background: color-mix(in srgb, var(--accent) 70%, rgba(0,0,0,.2));
+  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+}
+
+/* See-through: Start stays black; each tile is a window onto one fixed wallpaper. */
+[data-look="seethru"] .tile {
+  background-color: #111;
+  background-image:
+    linear-gradient(var(--tint, transparent), var(--tint, transparent)),
+    linear-gradient(rgba(0,0,0,var(--wp-dim, .25)), rgba(0,0,0,var(--wp-dim, .25))),
+    var(--wp);
+  background-repeat: no-repeat;
+  background-size: 100% 100%, 100% 100%, 100vw 100vh;
+  background-position: 0 0, 0 0,
+    calc(-1px * (var(--gx, 12) + var(--tx, 0))) calc(1px * (var(--sy, 0) - var(--gy, 40) - var(--ty, 0)));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.14);
+}
+[data-look="seethru"] .tile .initials span { background: rgba(0,0,0,.28); }
+
+/* Settings: wallpaper picker */
+.wp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+.wp-grid button { aspect-ratio: 9 / 16; background-size: cover; background-position: center; border: 2px solid transparent;
+                  position: relative; font-size: 12px; display: flex; align-items: flex-end; padding: 4px 6px; }
+.wp-grid button { background-clip: padding-box !important; background-origin: padding-box !important; }  /* no gradient bleed under the border */
+.wp-grid button.on { border-color: #fff; }
+.wp-grid button span { text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+.wp-grid .wp-add { border: 1px dashed var(--fg-2); flex-direction: column; justify-content: center; align-items: center; gap: 6px; }
+input[type="range"] { width: 100%; accent-color: var(--accent); margin: 10px 0 4px; }

@@ -12,6 +12,9 @@ import { initGrid, render, refreshContent, getLayout, setLayout, pin, exitEdit, 
 import { initPanels, openPanel, closePanel, panelName } from './panels.js';
 import { initAgent, prefs, savePrefs } from './agent.js';
 import { icon } from './icons.js';
+import { applyTheme } from './theme.js';
+
+applyTheme();
 
 const LAYOUT_KEY = 'mosaic-layout';
 const $ = id => document.getElementById(id);

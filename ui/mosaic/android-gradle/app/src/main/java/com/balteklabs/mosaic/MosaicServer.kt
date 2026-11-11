@@ -39,8 +39,21 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
         edit.apply()
     }
 
-    override fun serve(session: IHTTPSession): Response =
-        if (session.uri == "/api/glance") glance() else super.serve(session)
+    override fun serve(session: IHTTPSession): Response = when {
+        session.uri == "/api/glance" -> glance()
+        // Bundled Selawik fonts: give them a real font type (the base server only knows js/css).
+        session.uri.startsWith("/static/fonts/") && session.uri.endsWith(".woff2") -> font(session.uri.removePrefix("/static/"))
+        else -> super.serve(session)
+    }
+
+    private fun font(path: String): Response = try {
+        if (path.contains("..")) throw java.io.IOException("bad path")
+        newChunkedResponse(Response.Status.OK, "font/woff2", ctx.assets.open("web/$path")).also {
+            it.addHeader("Cache-Control", "max-age=86400")
+        }
+    } catch (_: java.io.IOException) {
+        newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
+    }
 
     private fun glance(): Response {
         val data = mapOf(

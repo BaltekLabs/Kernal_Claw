@@ -37,6 +37,18 @@ interface built around tiles instead of the nodal-net canvas.
 | shortcut | Last answer | Runs its saved prompt |
 | any app | App icon | Launches the app |
 
+### Looks and wallpapers
+
+Settings → start → **look**:
+
+- **classic**: solid accent tiles on black (Windows Phone 8).
+- **glass**: frosted, raised tiles floating over a wallpaper (Windows 10 Mobile). Panels, app bars and the app list frost over the wallpaper too.
+- **see-through**: Start stays black and the wallpaper shows only through the tiles, staying put as they scroll over it (Windows Phone 8.1).
+
+Pick a built-in wallpaper or your own photo; photos are cropped to the screen and kept on the phone. There's also a slider to dim the wallpaper. Tile colors still work: they frost in glass and tint in see-through.
+
+Text uses Selawik, Microsoft's open-source stand-in for Segoe UI (SIL Open Font License, `assets/web/fonts/Selawik-OFL.txt`).
+
 ### Choosing the model
 
 Mosaic starts on **Claude Opus 5.5**, with **Haiku 5.5** for quick questions

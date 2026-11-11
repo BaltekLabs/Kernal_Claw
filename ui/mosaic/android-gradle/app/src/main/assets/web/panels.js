@@ -14,6 +14,7 @@ import { icon } from './icons.js';
 import { CATALOG, PALETTE, newId, defaultLayout } from './catalog.js';
 import { PROVIDERS, modelName } from './models.js';
 import { createPeoplePanels } from './people.js';
+import { theme, LOOKS, WALLPAPERS, setLook, setWallpaper, setDim, usePhoto, hasPhoto, photoUrl } from './theme.js';
 import { threads, messagePivots, channelOf, notifItems, NOTIF_PIVOTS } from './inbox.js';
 import { mountAgent, unmountAgent, prefs, savePrefs, setAgentMode } from './agent.js';
 
@@ -562,6 +563,22 @@ const PANELS = {
       const toggle = (a, on, t, s) => `<button class="toggle${on ? ' on' : ''}" data-a="${a}">
         <div><div class="tt">${t}</div><div class="ts">${s}</div></div><div class="switch"></div></button>`;
       if (pivot === 'start') return `
+        <div class="sec">look</div>
+        <div class="pills">${Object.entries(LOOKS).map(([k, label]) => `<button class="pill${theme.look === k ? ' on' : ''}" data-setlook="${k}">${label}</button>`).join('')}</div>
+        <div class="note" style="padding-top:6px">${{
+          classic: 'Solid tiles on black.',
+          glass: 'Frosted, raised tiles floating over your wallpaper.',
+          seethru: 'Black Start; your wallpaper shows through the tiles as you scroll.' }[theme.look]}</div>
+        ${theme.look === 'classic' ? '' : `
+        <div class="sec">wallpaper</div>
+        <div class="wp-grid">
+          ${Object.entries(WALLPAPERS).map(([k, bg]) => `<button data-wp="${k}" class="${theme.wallpaper === k ? 'on' : ''}" style="background:${bg}"><span>${k}</span></button>`).join('')}
+          ${hasPhoto() ? `<button data-wp="photo" class="${theme.wallpaper === 'photo' ? 'on' : ''}" style="background-image:url('${photoUrl()}')"><span>photo</span></button>` : ''}
+          <button class="wp-add" data-a="wp-photo">${icon('plus')}<span>${hasPhoto() ? 'new photo' : 'your photo'}</span></button>
+        </div>
+        <input id="wp-file" type="file" accept="image/*" hidden>
+        <div class="sec">dim wallpaper</div>
+        <input id="wp-dim" type="range" min="0" max="0.8" step="0.05" value="${theme.dim}">`}
         <div class="sec">accent color</div>
         <div class="swatches">${PALETTE.map(c => `<button data-accent="${c}" class="${c === prefs.accent ? 'on' : ''}" style="background:${c}"></button>`).join('')}</div>
         <div class="sec">tiles</div>
@@ -583,7 +600,18 @@ const PANELS = {
           ${PROVIDERS[s.active_provider]?.needsKey && !s.has_key ? '<div class="t3">No API key saved yet.</div>' : ''}</div></div>
         <button class="btn accent" data-a="pick-model">choose model</button>`;
     },
+    after(body) {
+      const dim = body.querySelector('#wp-dim');
+      if (dim) dim.oninput = () => setDim(+dim.value);
+      const file = body.querySelector('#wp-file');
+      if (file) file.onchange = async () => { await usePhoto(file.files?.[0]); draw(); };
+    },
     async click(e) {
+      const look = e.target.closest('[data-setlook]');
+      if (look) { setLook(look.dataset.setlook); return draw(); }
+      const wp = e.target.closest('[data-wp]');
+      if (wp) { setWallpaper(wp.dataset.wp); return draw(); }
+      if (e.target.closest('[data-a="wp-photo"]')) return bodyEl.querySelector('#wp-file')?.click();
       const sw = e.target.closest('[data-accent]');
       if (sw) { ctx.applyAccent(sw.dataset.accent); draw(); return; }
       const a = e.target.closest('[data-a]')?.dataset.a;

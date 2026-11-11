@@ -31,6 +31,8 @@ export function initGrid(opts) {
   onSave = opts.onSave; onOpen = opts.onOpen;
   layout = opts.layout;
   window.addEventListener('resize', () => render());
+  // See-through: tiles move over a fixed wallpaper, so track how far Start has scrolled.
+  scrollEl.addEventListener('scroll', () => gridEl.style.setProperty('--sy', scrollEl.scrollTop), { passive: true });
   gridEl.addEventListener('pointerdown', onDown);
   // Tap on empty space while editing → done.
   scrollEl.addEventListener('click', e => {
@@ -86,6 +88,10 @@ export function render() {
   const packed = pack(layout.tiles);
   slots = packed.slots;
   gridEl.style.height = `${packed.rows * (unit + gap) - gap}px`;
+  // Where the grid sits on screen (at scroll 0), for the see-through wallpaper.
+  // Layout offsets, not the screen rect: the pager may be mid-slide to the app list.
+  gridEl.style.setProperty('--gx', gridEl.offsetLeft);
+  gridEl.style.setProperty('--gy', gridEl.offsetTop);
 
   const live = new Set();
   layout.tiles.forEach((tile, i) => {
@@ -96,7 +102,9 @@ export function render() {
     el.className = `tile ${tile.size}${tile.type === 'app' ? ' app' : ''}` +
       `${CATALOG[tile.type].anim === 'flip' ? ' flip' : ''}${tile.id === selectedId ? ' selected' : ''}` +
       `${el.classList.contains('dragging') ? ' dragging' : ''}`;
-    el.style.background = tile.color || '';
+    // Per-tile colour: solid in classic, frosted in glass, a tint over the wallpaper in see-through.
+    if (tile.color) { el.style.setProperty('--tc', tile.color); el.style.setProperty('--tint', tile.color + '8c'); }
+    else { el.style.removeProperty('--tc'); el.style.removeProperty('--tint'); }
     if (!el.classList.contains('dragging')) place(el, slots[tile.id]);
     else sizeOnly(el, slots[tile.id]);
     updateContent(el, tile);
@@ -112,6 +120,8 @@ function px(s) {
 function place(el, s) {
   const p = px(s);
   Object.assign(el.style, { left: `${p.left}px`, top: `${p.top}px`, width: `${p.width}px`, height: `${p.height}px` });
+  el.style.setProperty('--tx', p.left);     // see-through look lines the wallpaper up with these
+  el.style.setProperty('--ty', p.top);
 }
 function sizeOnly(el, s) {
   const p = px(s);
