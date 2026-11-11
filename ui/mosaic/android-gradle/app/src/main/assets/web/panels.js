@@ -15,7 +15,7 @@ import { CATALOG, PALETTE, newId, defaultLayout } from './catalog.js';
 import { PROVIDERS, modelName } from './models.js';
 import { createPeoplePanels } from './people.js';
 import { theme, LOOKS, WALLPAPERS, setLook, setWallpaper, setDim, setClarity, usePhoto, hasPhoto, photoUrl } from './theme.js';
-import { transcript, waitingDigest, notifDigest } from './inbox.js';
+import { transcript, waitingDigest, notifDigest, addSent } from './inbox.js';
 import { threads, messagePivots, channelOf, notifItems, NOTIF_PIVOTS } from './inbox.js';
 import { mountAgent, unmountAgent, prefs, savePrefs, setAgentMode } from './agent.js';
 
@@ -163,20 +163,95 @@ const openThreads = new Set();
 function threadRow(t, pivot) {
   const evs = pivot === 'all' || pivot === 'unread' ? t.events : t.events.filter(e => channelOf(e) === pivot);
   const last = evs[0];
-  const unread = evs.filter(e => e.unread).length;
+  const lastOut = evs.find(e => e.dir === 'out')?.time || 0;
+  const unread = evs.filter(e => e.unread && e.time > lastOut).length;
   const app = t.number ? null : chatApp(channelOf(last));
   const acts = t.number ? callBack(t.number)
     : app ? `<div class="acts">${actBtn('open-app', 'apps', dataAttrs({ pkg: app.package }))}</div>` : '';
   const open = openThreads.has(t.key);
-  const lines = open ? `<div class="thread">${evs.slice(0, 6).map(e => `
-      <div class="${e.dir === 'out' ? 'me' : ''}"><b>${e.dir === 'out' ? 'you' : esc(e.group ? e.person : t.person)}</b> ${esc(e.text)}
-        <span>${ago(e.time)}</span></div>`).join('')}
+  const lines = open ? `<div class="thread">
+      ${evs.slice(0, 10).reverse().map(e => `
+        <div class="bubble${e.dir === 'out' ? ' me' : ''}">${e.group && e.dir !== 'out' ? `<b>${esc(e.person)}</b>` : ''}${esc(e.text)}
+          <span>${e.dir === 'out' && e.local ? 'sent from Mosaic · ' : ''}${ago(e.time)}${e.channel && channelOf(e) !== 'texts' ? ` · ${esc(e.channel)}` : ''}</span></div>`).join('')}
+      ${composerHtml(t)}
       <button class="btn" data-a="thread-ask" ${dataAttrs({ thread: t.key })}>catch me up</button></div>` : '';
   return `<div class="li${unread ? ' unread' : ''}" ${dataAttrs({ thread: t.key })}>
     ${sq(esc(initialsOf(t.person)))}
     <div class="tx"><div class="t1">${esc(t.person)}</div>
       <div class="t2">${esc(last.channel === 'SMS' || last.channel === 'MMS' ? 'text' : last.channel)} · ${ago(last.time)}${unread ? ` · ${unread} new` : ''}</div>
       <div class="t3">${last.dir === 'out' ? 'you: ' : ''}${esc(last.text)}</div></div>${acts}</div>${lines}`;
+}
+
+/**
+ * How a reply to this conversation can be sent from Mosaic:
+ *   sms    texts, straight through Android
+ *   reply  chat apps, through their notification's own Reply action (works while
+ *          that notification is still showing)
+ *   null   neither: open the app instead
+ */
+function replyRoute(t) {
+  const theirs = t.events.filter(e => e.dir !== 'out');
+  const latest = theirs[0] || t.events[0];
+  const chat = theirs.find(e => e.canReply);
+  const viaSms = t.number && (channelOf(latest) === 'texts' || !chat);
+  if (viaSms) return { via: 'sms', number: t.number, channel: 'SMS', label: 'text' };
+  if (chat) return { via: 'reply', app: chat.channel, person: chat.person, channel: chat.channel, label: `reply on ${chat.channel}` };
+  return null;
+}
+
+const drafts = new Map();   // thread key → unsent text (survives list refreshes)
+
+function composerHtml(t) {
+  const r = replyRoute(t);
+  if (!r) {
+    const ch = t.events.find(e => e.dir !== 'out')?.channel || t.events[0]?.channel || 'the app';
+    const app = chatApp(channelOf(t.events[0] || {}));
+    return `<div class="note small">Replying here works while ${esc(ch)}’s notification for ${esc(t.person)} is showing.
+      ${app ? `<button class="btn" data-a="open-app" ${dataAttrs({ pkg: app.package })}>open ${esc(ch)}</button>` : ''}</div>`;
+  }
+  if (r.via === 'sms' && store.glance?.canSms === false)
+    return `<div class="note small">Allow Mosaic to send texts (Settings → Apps → Mosaic → Permissions → SMS) to reply here.
+      <button class="btn" data-a="sms" ${dataAttrs({ n: t.number })}>open messages</button></div>`;
+  return `<div class="reply-box">
+    <input type="text" data-draft="${esc(t.key)}" value="${esc(drafts.get(t.key) || '')}"
+      placeholder="${esc(r.label)} ${esc(t.events.some(e => e.group) ? t.person : t.person.split(' ')[0])}" autocomplete="off" enterkeyhint="send">
+    <button data-a="send" ${dataAttrs({ thread: t.key })} aria-label="Send">${icon('send')}</button></div>`;
+}
+
+async function sendReply(key, input, button) {
+  const t = threads().find(x => x.key === key);
+  const text = input.value.trim();
+  if (!t || !text) return;
+  const r = replyRoute(t);
+  if (!r) return toast('Can’t reply to this conversation from here');
+  button.disabled = input.disabled = true;
+  const res = await send('/api/send', r.via === 'sms'
+    ? { via: 'sms', number: r.number, text }
+    : { via: 'reply', app: r.app, person: r.person, text });
+  button.disabled = input.disabled = false;
+
+  if (res.error) {
+    const why = {
+      sms_permission: 'Mosaic isn’t allowed to send texts yet',
+      no_reply_action: `${r.channel}’s notification is gone, so it can’t be answered from here. Open ${r.channel} to reply`,
+    }[res.error] || `Couldn’t send: ${res.error}`;
+    return toast(why, 4500);
+  }
+  addSent({ person: t.person, number: t.number || '', channel: r.channel, text });
+  drafts.delete(key);
+  draw();
+  if (res.id) checkSms(res.id, t.person);
+  setTimeout(() => refresh('glance'), 4000);
+}
+
+/** Texts report back asynchronously; only speak up if one fails. */
+async function checkSms(id, person) {
+  for (const wait of [2500, 5000, 10000]) {
+    await new Promise(ok => setTimeout(ok, wait));
+    const s = (await getJSON(`/api/send/status?id=${encodeURIComponent(id)}`, {}))?.status;
+    if (s === 'sent') return;
+    if (s && s.startsWith('failed')) return toast(`Text to ${person} didn’t send (${s})`, 5000);
+  }
 }
 
 // Notifications: app notifications plus call-log entries.
@@ -287,9 +362,20 @@ const PANELS = {
       return empty(pivot === 'unread' ? 'No unread messages.'
         : 'No messages this week. Texts need SMS permission. Chat apps like Signal and WhatsApp show up once notification access is on and their notifications show message text.');
     },
+    after(body) {
+      body.querySelectorAll('[data-draft]').forEach(input => {
+        const key = input.dataset.draft;
+        input.oninput = () => drafts.set(key, input.value);
+        input.onkeydown = e => {
+          if (e.key === 'Enter') sendReply(key, input, input.nextElementSibling);
+        };
+      });
+    },
     click(e) {
+      if (e.target.closest('.reply-box input')) return;     // typing, not toggling the thread
       const b = e.target.closest('[data-a]');
       const a = b?.dataset.a;
+      if (a === 'send') return sendReply(b.dataset.thread, b.previousElementSibling, b);
       if (a === 'call') return call(b.dataset.n);
       if (a === 'sms') return sms(b.dataset.n);
       if (a === 'open-app') return ctx.launch({ package: b.dataset.pkg, profile: 'personal' });

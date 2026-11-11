@@ -36,6 +36,7 @@ class VoiceOSNotificationService : NotificationListenerService() {
         // Chat apps (RCS, WhatsApp, Signal…) never reach the SMS provider —
         // keep their messages so the social tools can see current conversations.
         try { CommsHub.messageLog(applicationContext).capture(sbn, appName) } catch (_: Exception) {}
+        try { ReplyRegistry.capture(sbn, appName) } catch (_: Exception) {}
 
         synchronized(lock) {
             // Deduplicate: same package + notification ID = update in place
@@ -63,8 +64,18 @@ class VoiceOSNotificationService : NotificationListenerService() {
         }
     }
 
+    // On (re)connect, pick up reply actions from notifications already showing.
+    override fun onListenerConnected() {
+        try {
+            activeNotifications?.forEach { sbn ->
+                if (sbn.packageName != packageName) ReplyRegistry.capture(sbn, appLabel(sbn.packageName))
+            }
+        } catch (_: Exception) {}
+    }
+
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         synchronized(lock) { recent.removeAll { it["key"] == sbn.key } }
+        ReplyRegistry.remove(sbn)
 
         // Remove from context store too
         contextStore?.let { store ->

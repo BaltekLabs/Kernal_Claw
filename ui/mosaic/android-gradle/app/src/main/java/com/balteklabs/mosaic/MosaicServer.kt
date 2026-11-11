@@ -1,26 +1,55 @@
 package com.balteklabs.mosaic
 
+import android.Manifest
+import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.BatteryManager
+import android.os.Build
+import android.telephony.SmsManager
+import androidx.core.content.ContextCompat
+import com.balteklabs.voiceos.ReplyRegistry
 import android.provider.CalendarContract
 import com.balteklabs.voiceos.CommsHub
 import com.balteklabs.voiceos.VoiceOSServer
 import com.google.gson.Gson
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
+import fi.iki.elonen.NanoHTTPD.Method
 import fi.iki.elonen.NanoHTTPD.Response
 
 /**
  * The VoiceOS server (agent, tools, tasks, CRM, comms, heartbeat, apps) plus the
  * few routes only the Mosaic tile UI needs.
  *
- *   GET /api/glance  → live-tile data in one round trip: battery, upcoming
- *                      calendar events, and recent messages / calls.
+ *   GET  /api/glance       → live-tile data in one round trip: battery, upcoming
+ *                            calendar events, and recent messages / calls.
+ *   POST /api/send         → reply from Mosaic without opening another app:
+ *                            { via: "sms", number, text }        texts, sent directly
+ *                            { via: "reply", app, person, text } chat apps, through
+ *                            the notification's own Reply action
+ *   GET  /api/send/status  → ?id= result of a text sent with /api/send
  */
 class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, port) {
 
     private val gson = Gson()
+    private val smsStatus = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val SMS_SENT = "com.balteklabs.mosaic.SMS_SENT"
 
-    init { applyFirstRunDefaults() }
+    init {
+        applyFirstRunDefaults()
+        // Delivery reports for texts sent from Mosaic (sent / failed).
+        ContextCompat.registerReceiver(ctx, object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                val id = i.getStringExtra("id") ?: return
+                smsStatus[id] = if (resultCode == Activity.RESULT_OK) "sent" else "failed ($resultCode)"
+            }
+        }, IntentFilter(SMS_SENT), ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
 
     /**
      * VoiceOS starts on Ollama; Mosaic starts on Claude. Applied once per install
@@ -41,6 +70,8 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
 
     override fun serve(session: IHTTPSession): Response = when {
         session.uri == "/api/glance" -> glance()
+        session.uri == "/api/send" && session.method == Method.POST -> send(body(session))
+        session.uri == "/api/send/status" -> json(mapOf("status" to (smsStatus[session.parms["id"] ?: ""] ?: "pending")))
         // Bundled Selawik fonts: give them a real font type (the base server only knows js/css).
         session.uri.startsWith("/static/fonts/") && session.uri.endsWith(".woff2") -> font(session.uri.removePrefix("/static/"))
         else -> super.serve(session)
@@ -59,7 +90,8 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
         val data = mapOf(
             "battery"  to battery(),
             "calendar" to calendar(days = 7, limit = 20),
-            "comms"    to comms(days = 7)
+            "comms"    to comms(days = 7),
+            "canSms"   to (ctx.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED)
         )
         return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(data)).also {
             it.addHeader("Cache-Control", "no-cache")
@@ -122,6 +154,53 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
         mapOf("unread" to 0, "missed" to 0, "messages" to emptyList<Any>(), "calls" to emptyList<Any>())
     }
 
+    // ── Sending ────────────────────────────────────────────────────
+    private fun send(b: Map<String, Any>): Response {
+        val text = (b["text"] as? String)?.trim().orEmpty()
+        if (text.isEmpty()) return json(mapOf("error" to "empty"), Response.Status.BAD_REQUEST)
+        return when (b["via"]) {
+            "sms" -> {
+                val number = (b["number"] as? String)?.trim().orEmpty()
+                if (number.isEmpty()) return json(mapOf("error" to "missing number"), Response.Status.BAD_REQUEST)
+                if (ctx.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED)
+                    return json(mapOf("error" to "sms_permission"))
+                try {
+                    val id = java.util.UUID.randomUUID().toString()
+                    sendSms(number, text, id)
+                    json(mapOf("ok" to true, "id" to id))
+                } catch (e: Exception) { json(mapOf("error" to "sms_failed: ${e.message}")) }
+            }
+            "reply" -> {
+                val err = ReplyRegistry.reply(ctx, b["app"] as? String ?: "", b["person"] as? String ?: "", text)
+                if (err == null) json(mapOf("ok" to true)) else json(mapOf("error" to err))
+            }
+            else -> json(mapOf("error" to "unknown via"), Response.Status.BAD_REQUEST)
+        }
+    }
+
+    /** Send directly. Android files a copy in the SMS history for non-default apps. */
+    private fun sendSms(number: String, text: String, id: String) {
+        val sm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) ctx.getSystemService(SmsManager::class.java)
+                 else @Suppress("DEPRECATION") SmsManager.getDefault()
+        val sent = PendingIntent.getBroadcast(ctx, id.hashCode(),
+            Intent(SMS_SENT).setPackage(ctx.packageName).putExtra("id", id),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        smsStatus[id] = "pending"
+        val parts = sm.divideMessage(text)
+        if (parts.size > 1) sm.sendMultipartTextMessage(number, null, parts, ArrayList(List(parts.size) { sent }), null)
+        else sm.sendTextMessage(number, null, text, sent, null)
+    }
+
+    private fun body(session: IHTTPSession): Map<String, Any> = try {
+        val files = HashMap<String, String>()
+        session.parseBody(files)
+        @Suppress("UNCHECKED_CAST")
+        gson.fromJson(files["postData"] ?: "{}", Map::class.java) as Map<String, Any>
+    } catch (_: Exception) { emptyMap() }
+
+    private fun json(data: Any, status: Response.Status = Response.Status.OK): Response =
+        newFixedLengthResponse(status, "application/json", gson.toJson(data))
+
     private fun eventMap(e: CommsHub.Event) = mapOf(
         "person"  to e.person,
         "number"  to (e.number ?: ""),
@@ -130,6 +209,8 @@ class MosaicServer(private val ctx: Context, port: Int) : VoiceOSServer(ctx, por
         "text"    to e.text.take(200),
         "time"    to e.time,
         "unread"  to e.unread,
-        "group"   to e.group
+        "group"   to e.group,
+        // Whether Mosaic can answer this conversation in place (chat apps).
+        "canReply" to (e.channel != "Call" && ReplyRegistry.canReply(e.channel, e.person))
     )
 }

@@ -237,6 +237,22 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 .thread .me b { color: var(--accent); }
 .thread span { color: var(--fg-3); font-size: 12px; margin-left: 4px; }
 .thread .btn { align-self: flex-start; margin-top: 2px; }
+.thread .bubble { max-width: 82%; align-self: flex-start; background: rgba(255,255,255,.08); color: var(--fg);
+                  padding: 7px 10px; font-size: 15px; line-height: 1.35; word-wrap: break-word; }
+.thread .bubble.me { align-self: flex-end; background: var(--accent); }
+.thread .bubble b { display: block; font-size: 12px; color: var(--accent); margin: 0 0 2px; }
+.thread .bubble span { display: block; margin: 3px 0 0; font-size: 11px; color: rgba(255,255,255,.55); }
+.thread .bubble.me span { color: rgba(255,255,255,.8); }
+.reply-box { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.reply-box input { flex: 1; min-width: 0; height: 40px; padding: 0 10px; background: #fff; color: #000;
+                   border: 2px solid #fff; outline: 0; font-size: 16px; border-radius: 0; }
+.reply-box input:focus { border-color: var(--accent); }
+.reply-box button { width: 40px; height: 40px; flex: none; background: var(--accent); display: flex;
+                    align-items: center; justify-content: center; }
+.reply-box button:disabled, .reply-box input:disabled { opacity: .5; }
+.reply-box button svg { width: 20px; height: 20px; stroke-width: 2; }
+.note.small { font-size: 13px; padding: 4px 0; }
+[data-look="glass"] .thread .bubble:not(.me) { background: rgba(255,255,255,.12); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 .field textarea { width: 100%; padding: 8px 10px; background: #fff; color: #000; border: 2px solid #fff;
                   outline: 0; font-size: 16px; border-radius: 0; resize: none; }
 .li .tx > span { display: block; }

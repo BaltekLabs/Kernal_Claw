@@ -26,7 +26,7 @@ interface built around tiles instead of the nodal-net canvas.
 | ask mosaic | Agent state ring, latest heartbeat finding, last answer | Agent (voice or text) |
 | clock | Time and date | Agent: upcoming alarms |
 | calendar | Today's date, next events (flips) | Agenda |
-| messaging | Unread count, latest messages | Conversations from texts and chat apps (Signal, WhatsApp, RCS, DMs…). Tabs: all / unread / texts / one per chat app. Tap a conversation to see its latest messages |
+| messaging | Unread count, latest messages | Conversations from texts and chat apps (Signal, WhatsApp, RCS, DMs…). Tabs: all / unread / texts / one per chat app. Tap a conversation to see its latest messages and reply right there |
 | phone | Missed calls | Notifications → calls |
 | people | Initials of people to follow up with | Everyone you keep up with. Search names, tags and numbers; tabs for all / follow up / out of touch / each relationship type. Tap a tag to filter by it. Each person has a contact card: call, text, follow-up bell, agent actions (draft a message, catch me up, suggest a plan, remind me), relationship, keep-in-touch frequency, how they're doing, tags, phone, birthday, notes, and recent messages and calls |
 | tasks | Pending count, what's next | To do / done, add task |
@@ -62,6 +62,15 @@ ollama) where you can:
 - for Ollama, set the server address and choose from the models installed on it
 
 If a reply looks like a key or model error, Ask Mosaic points you back to the picker.
+
+### Replying from Mosaic
+
+Expand a conversation in Messaging and type in the box under it:
+
+- **Texts** go straight out over SMS. Android files them in your normal message history, so they show up in the Messages app too. Mosaic asks for SMS permission on first launch, and you'll be told if a text fails to send.
+- **Chat apps** (Signal, WhatsApp, Google Messages/RCS, Telegram…) are answered through the Reply button on their own notification, the same way a smartwatch replies. That only works while the conversation's notification is still showing; otherwise Mosaic says so and offers to open the app.
+
+Replies you send show up in the conversation right away (marked "sent from Mosaic").
 
 ### Messages vs. notifications
 

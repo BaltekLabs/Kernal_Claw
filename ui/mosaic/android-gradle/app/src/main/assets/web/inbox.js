@@ -3,10 +3,28 @@
  *   Messaging     → conversations: SMS/MMS plus chat apps (Signal, WhatsApp, RCS, DMs…)
  *   Notifications → everything else that pinged you, by type: messages, calls, email, other
  */
-import { store } from './store.js';
+import { store, load, save } from './store.js';
 
 const comms = () => store.glance?.comms || {};
-export const messages = () => comms().messages || [];
+
+// Replies sent from Mosaic. Texts land in the SMS history and chat apps usually
+// echo replies into their notification, but some (WhatsApp) just clear it, so we
+// keep our own copy until the real one shows up.
+const SENT_KEY = 'mosaic-sent';
+let sent = load(SENT_KEY, []).filter(e => Date.now() - e.time < 7 * 86_400_000);
+export function addSent(e) {
+  sent.unshift({ ...e, dir: 'out', unread: false, time: Date.now(), local: true });
+  save(SENT_KEY, sent.slice(0, 100));
+}
+const sameMessage = (a, b) => a.dir === 'out' && String(a.person).toLowerCase() === String(b.person).toLowerCase()
+  && String(a.text).trim() === String(b.text).trim() && Math.abs(a.time - b.time) < 15 * 60_000;
+
+/** Messages newest first: the phone's, plus our sent copies it doesn't have yet. */
+export function messages() {
+  const server = comms().messages || [];
+  const extra = sent.filter(s => !server.some(m => sameMessage(m, s)));
+  return extra.length ? [...extra, ...server].sort((a, b) => b.time - a.time) : server;
+}
 export const calls = () => comms().calls || [];
 
 // ── Messaging ───────────────────────────────────────────────────
@@ -27,7 +45,12 @@ export function threads() {
     if (e.unread) t.unread++;
     if (!t.number && e.number) t.number = e.number;
   }
-  return [...by.values()].map(t => ({ ...t, last: t.events[0], channels: [...t.channels] }));
+  // Replying means you've seen it: only count what arrived after your last message.
+  return [...by.values()].map(t => {
+    const lastOut = t.events.find(e => e.dir === 'out')?.time || 0;
+    return { ...t, last: t.events[0], channels: [...t.channels],
+             unread: t.events.filter(e => e.unread && e.time > lastOut).length };
+  });
 }
 
 /** Pivots for the messaging panel: all, unread, then each channel that has messages. */

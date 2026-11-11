@@ -88,7 +88,8 @@ class MosaicActivity : Activity() {
             Manifest.permission.READ_CALENDAR,
             Manifest.permission.WRITE_CALENDAR,
             Manifest.permission.READ_CALL_LOG,
-            Manifest.permission.READ_SMS
+            Manifest.permission.READ_SMS,
+            Manifest.permission.SEND_SMS
         ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }.toTypedArray()
         if (needed.isNotEmpty()) requestPermissions(needed, 1001)
 
