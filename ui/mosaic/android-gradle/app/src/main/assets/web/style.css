@@ -387,11 +387,12 @@ html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
 [data-look="glass"] .tile {
   background:
     linear-gradient(155deg, rgba(255,255,255,.24) 0%, rgba(255,255,255,.05) 36%, rgba(255,255,255,0) 62%),
-    color-mix(in srgb, var(--tc, var(--accent)) 44%, rgba(8,10,18,.28));
-  -webkit-backdrop-filter: blur(18px) saturate(170%);
-  backdrop-filter: blur(18px) saturate(170%);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.5),
+    color-mix(in srgb, var(--tc, var(--accent)) var(--glass-tint, 44%), rgba(8,10,18,var(--glass-shade, .28)));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(170%);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(170%);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,var(--glass-edge, .18)), inset 0 1px 0 rgba(255,255,255,.5),
               0 14px 30px -12px rgba(0,0,0,.7);
+  text-shadow: 0 1px 3px rgba(0,0,0,var(--glass-text, .35));
 }
 [data-look="glass"] .tile .initials span { background: rgba(255,255,255,.12); }
 [data-look="glass"] #statusbar { background: linear-gradient(rgba(0,0,0,.5), transparent); color: rgba(255,255,255,.85); }
@@ -443,3 +444,4 @@ html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
 .wp-grid button span { text-shadow: 0 1px 3px rgba(0,0,0,.8); }
 .wp-grid .wp-add { border: 1px dashed var(--fg-2); flex-direction: column; justify-content: center; align-items: center; gap: 6px; }
 input[type="range"] { width: 100%; accent-color: var(--accent); margin: 10px 0 4px; }
+.range-ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--fg-2); }

@@ -45,7 +45,7 @@ Settings → start → **look**:
 - **glass**: frosted, raised tiles floating over a wallpaper (Windows 10 Mobile). Panels, app bars and the app list frost over the wallpaper too.
 - **see-through**: Start stays black and the wallpaper shows only through the tiles, staying put as they scroll over it (Windows Phone 8.1).
 
-Pick a built-in wallpaper or your own photo; photos are cropped to the screen and kept on the phone. There's also a slider to dim the wallpaper. Tile colors still work: they frost in glass and tint in see-through.
+Pick a built-in wallpaper or your own photo; photos are cropped to the screen and kept on the phone. There's also a slider to dim the wallpaper, and in glass a **tile transparency** slider that runs from frosted to clear. Tile colors still work: they frost in glass and tint in see-through.
 
 Text uses Selawik, Microsoft's open-source stand-in for Segoe UI (SIL Open Font License, `assets/web/fonts/Selawik-OFL.txt`).
 

@@ -14,7 +14,7 @@ import { icon } from './icons.js';
 import { CATALOG, PALETTE, newId, defaultLayout } from './catalog.js';
 import { PROVIDERS, modelName } from './models.js';
 import { createPeoplePanels } from './people.js';
-import { theme, LOOKS, WALLPAPERS, setLook, setWallpaper, setDim, usePhoto, hasPhoto, photoUrl } from './theme.js';
+import { theme, LOOKS, WALLPAPERS, setLook, setWallpaper, setDim, setClarity, usePhoto, hasPhoto, photoUrl } from './theme.js';
 import { threads, messagePivots, channelOf, notifItems, NOTIF_PIVOTS } from './inbox.js';
 import { mountAgent, unmountAgent, prefs, savePrefs, setAgentMode } from './agent.js';
 
@@ -569,6 +569,10 @@ const PANELS = {
           classic: 'Solid tiles on black.',
           glass: 'Frosted, raised tiles floating over your wallpaper.',
           seethru: 'Black Start; your wallpaper shows through the tiles as you scroll.' }[theme.look]}</div>
+        ${theme.look === 'glass' ? `
+        <div class="sec">tile transparency</div>
+        <input id="glass-clarity" type="range" min="0" max="1" step="0.05" value="${theme.clarity}">
+        <div class="range-ends"><span>frosted</span><span>clear</span></div>` : ''}
         ${theme.look === 'classic' ? '' : `
         <div class="sec">wallpaper</div>
         <div class="wp-grid">
@@ -603,6 +607,8 @@ const PANELS = {
     after(body) {
       const dim = body.querySelector('#wp-dim');
       if (dim) dim.oninput = () => setDim(+dim.value);
+      const clarity = body.querySelector('#glass-clarity');
+      if (clarity) clarity.oninput = () => setClarity(+clarity.value);
       const file = body.querySelector('#wp-file');
       if (file) file.onchange = async () => { await usePhoto(file.files?.[0]); draw(); };
     },

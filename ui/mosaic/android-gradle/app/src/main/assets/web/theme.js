@@ -27,7 +27,7 @@ export const WALLPAPERS = {
   prism:    'conic-gradient(from 210deg at 65% 35%, #0050ef, #6a00ff, #d80073, #fa6800, #f0a30a, #00aba9, #0050ef)',
 };
 
-export const theme = Object.assign({ look: 'classic', wallpaper: 'aurora', dim: 0.25 }, load(KEY, {}));
+export const theme = Object.assign({ look: 'classic', wallpaper: 'aurora', dim: 0.25, clarity: 0.65 }, load(KEY, {}));
 let photo = null;
 try { photo = localStorage.getItem(PHOTO_KEY); } catch { /* storage unavailable */ }
 
@@ -44,12 +44,22 @@ export function applyTheme() {
   root.dataset.look = theme.look;
   root.style.setProperty('--wp', wallpaperImage());
   root.style.setProperty('--wp-dim', String(theme.dim));
+  // Glass clarity 0..1: how see-through the tiles are. Clearer glass carries less
+  // colour and less frost, so the edge highlight and text shadow step up to keep
+  // tiles defined and labels readable over the wallpaper.
+  const t = theme.clarity;
+  root.style.setProperty('--glass-tint', `${Math.round(80 - 72 * t)}%`);
+  root.style.setProperty('--glass-shade', (0.35 * (1 - t)).toFixed(3));
+  root.style.setProperty('--glass-blur', `${(6 + 16 * (1 - t)).toFixed(1)}px`);
+  root.style.setProperty('--glass-edge', (0.16 + 0.18 * t).toFixed(3));
+  root.style.setProperty('--glass-text', (0.3 + 0.35 * t).toFixed(3));
   save(KEY, theme);
 }
 
 export function setLook(look) { theme.look = look; applyTheme(); }
 export function setWallpaper(name) { theme.wallpaper = name; applyTheme(); }
 export function setDim(v) { theme.dim = Math.max(0, Math.min(0.8, v)); applyTheme(); }
+export function setClarity(v) { theme.clarity = Math.max(0, Math.min(1, v)); applyTheme(); }
 
 /**
  * Turn a picked photo into a wallpaper: crop it to the screen's shape (cover),
