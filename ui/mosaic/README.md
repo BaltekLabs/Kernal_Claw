@@ -109,6 +109,15 @@ needs its own AI provider setup (Settings → ai).
 Tile layout, accent color and preferences are saved in the WebView's
 localStorage.
 
+## Restricted settings (sideloaded installs)
+
+Android 13 and later block SMS, notification access and accessibility for apps
+installed outside an app store, even after you tap Allow. To unlock them:
+Settings → Apps → Mosaic → ⋮ (top right) → **Allow restricted settings**, then
+grant the permission again. The ⋮ option only appears after Android has blocked
+a permission once. Mosaic's "allow texting" button takes you to that page when
+Android refuses.
+
 ## Build
 
 ```bash

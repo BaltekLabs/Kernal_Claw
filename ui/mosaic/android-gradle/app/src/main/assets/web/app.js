@@ -263,6 +263,13 @@ window.mosaicHome = () => {
   $('start-scroll').scrollTo({ top: 0, behavior: 'smooth' });
 };
 window.mosaicResume = () => { refreshAll(); statusBar(); };
+// Answer to "allow texting" (MosaicActivity). If Android refused without asking,
+// it has just opened Mosaic's app info page, where the restricted-settings switch is.
+window.mosaicPermission = (what, granted) => {
+  if (what !== 'sms') return;
+  if (granted) { toast('Texting allowed: you can reply from Messaging now'); refreshAll(); }
+  else toast('Android blocked it. On this page tap ⋮ → Allow restricted settings, then Permissions → SMS → Allow.', 9000);
+};
 
 // Desktop testing convenience: Escape acts as Back.
 document.addEventListener('keydown', e => { if (e.key === 'Escape') window.mosaicBack(); });

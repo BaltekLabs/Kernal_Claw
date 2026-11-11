@@ -113,6 +113,7 @@ class MosaicActivity : Activity() {
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
                 if (url.startsWith("mosaic://retry")) { forceRestart(); return true }
+                if (url.startsWith("mosaic://permission/sms")) { requestSmsPermission(); return true }
                 return !(url.startsWith(appUrl) || url.startsWith("http://localhost:$PORT"))
             }
 
@@ -254,6 +255,33 @@ class MosaicActivity : Activity() {
                 or View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             )
+    }
+
+    // ── SMS permission, asked for from the page ("allow texting") ─────────
+    private val SMS_REQUEST = 1002
+
+    private fun requestSmsPermission() {
+        if (checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED) {
+            notifyPage("sms", true); return
+        }
+        requestPermissions(arrayOf(Manifest.permission.SEND_SMS), SMS_REQUEST)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (requestCode != SMS_REQUEST) return
+        val granted = results.firstOrNull() == PackageManager.PERMISSION_GRANTED
+        notifyPage("sms", granted)
+        // Denied without a prompt usually means Android's "restricted settings" block
+        // (sideloaded apps) or "don't ask again": the fix lives on the app's info page.
+        if (!granted) try {
+            startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:$packageName")))
+        } catch (_: Exception) {}
+    }
+
+    private fun notifyPage(what: String, granted: Boolean) {
+        if (!onSplash()) webView.evaluateJavascript("window.mosaicPermission&&mosaicPermission('$what',$granted)", null)
     }
 
     @Deprecated("Deprecated in Java")

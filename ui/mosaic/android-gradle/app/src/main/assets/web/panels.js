@@ -210,8 +210,11 @@ function composerHtml(t) {
       ${app ? `<button class="btn" data-a="open-app" ${dataAttrs({ pkg: app.package })}>open ${esc(ch)}</button>` : ''}</div>`;
   }
   if (r.via === 'sms' && store.glance?.canSms === false)
-    return `<div class="note small">Allow Mosaic to send texts (Settings → Apps → Mosaic → Permissions → SMS) to reply here.
-      <button class="btn" data-a="sms" ${dataAttrs({ n: t.number })}>open messages</button></div>`;
+    return `<div class="note small">Mosaic needs permission to send texts before you can reply here.
+      <button class="btn accent" data-a="allow-sms">allow texting</button>
+      <button class="btn" data-a="sms" ${dataAttrs({ n: t.number })}>open messages</button>
+      <div class="help">If Android says it’s a <b>restricted setting</b>: open Settings → Apps → Mosaic, tap ⋮ (top right) →
+        <b>Allow restricted settings</b>, then Permissions → SMS → Allow.</div></div>`;
   return `<div class="reply-box">
     <input type="text" data-draft="${esc(t.key)}" value="${esc(drafts.get(t.key) || '')}"
       placeholder="${esc(r.label)} ${esc(t.events.some(e => e.group) ? t.person : t.person.split(' ')[0])}" autocomplete="off" enterkeyhint="send">
@@ -376,6 +379,7 @@ const PANELS = {
       const b = e.target.closest('[data-a]');
       const a = b?.dataset.a;
       if (a === 'send') return sendReply(b.dataset.thread, b.previousElementSibling, b);
+      if (a === 'allow-sms') { location.href = 'mosaic://permission/sms'; return; }   // MosaicActivity asks Android
       if (a === 'call') return call(b.dataset.n);
       if (a === 'sms') return sms(b.dataset.n);
       if (a === 'open-app') return ctx.launch({ package: b.dataset.pkg, profile: 'personal' });
