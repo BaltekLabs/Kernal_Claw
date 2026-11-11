@@ -35,7 +35,7 @@ if (prefs.accent) applyAccent(prefs.accent);
 
 // ── Shell context shared with panels ────────────────────────────
 const ctx = {
-  ask: (text, tileId) => openPanel('agent', { text, tileId }),
+  ask: (text, tileId, context) => openPanel('agent', { text, tileId, context }),
   panelAgent: opts => openPanel('agent', opts),
   launch: app => app && launch(app),
   toast,

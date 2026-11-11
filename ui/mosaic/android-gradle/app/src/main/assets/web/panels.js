@@ -15,6 +15,7 @@ import { CATALOG, PALETTE, newId, defaultLayout } from './catalog.js';
 import { PROVIDERS, modelName } from './models.js';
 import { createPeoplePanels } from './people.js';
 import { theme, LOOKS, WALLPAPERS, setLook, setWallpaper, setDim, setClarity, usePhoto, hasPhoto, photoUrl } from './theme.js';
+import { transcript, waitingDigest, notifDigest } from './inbox.js';
 import { threads, messagePivots, channelOf, notifItems, NOTIF_PIVOTS } from './inbox.js';
 import { mountAgent, unmountAgent, prefs, savePrefs, setAgentMode } from './agent.js';
 
@@ -170,7 +171,7 @@ function threadRow(t, pivot) {
   const lines = open ? `<div class="thread">${evs.slice(0, 6).map(e => `
       <div class="${e.dir === 'out' ? 'me' : ''}"><b>${e.dir === 'out' ? 'you' : esc(e.group ? e.person : t.person)}</b> ${esc(e.text)}
         <span>${ago(e.time)}</span></div>`).join('')}
-      <button class="btn" data-a="thread-ask" ${dataAttrs({ person: t.person })}>catch me up</button></div>` : '';
+      <button class="btn" data-a="thread-ask" ${dataAttrs({ thread: t.key })}>catch me up</button></div>` : '';
   return `<div class="li${unread ? ' unread' : ''}" ${dataAttrs({ thread: t.key })}>
     ${sq(esc(initialsOf(t.person)))}
     <div class="tx"><div class="t1">${esc(t.person)}</div>
@@ -292,7 +293,11 @@ const PANELS = {
       if (a === 'call') return call(b.dataset.n);
       if (a === 'sms') return sms(b.dataset.n);
       if (a === 'open-app') return ctx.launch({ package: b.dataset.pkg, profile: 'personal' });
-      if (a === 'thread-ask') return ctx.ask(`Catch me up on my recent conversation with ${b.dataset.person}. Is there anything I need to reply to?`);
+      if (a === 'thread-ask') {
+        const t = threads().find(x => x.key === b.dataset.thread);
+        if (t) return ctx.ask(`Catch me up on my conversation with ${t.person}`, null, transcript(t.person, t.events));
+        return;
+      }
       const row = e.target.closest('[data-thread]');
       if (!row) return;
       const k = row.dataset.thread;
@@ -301,7 +306,7 @@ const PANELS = {
     },
     act(a) {
       if (a === 'refresh') refresh('glance');
-      if (a === 'catchup') ctx.ask('Catch me up on my messages. Who is waiting to hear back from me?');
+      if (a === 'catchup') ctx.ask('Who’s waiting to hear back from me?', null, waitingDigest());
     },
   },
 
@@ -359,10 +364,10 @@ const PANELS = {
     async act(a) {
       const pivot = current.pivot;
       if (a === 'sum') ctx.ask({
-        messages: 'Go through my message notifications. Who needs a reply, and what should I say?',
-        calls:    'Who called me recently, and who should I call back?',
-        email:    'Summarize my recent email notifications. Anything important or time-sensitive?',
-      }[pivot] || 'Summarize my recent notifications. What actually needs my attention?');
+        messages: 'Which message notifications need a reply?',
+        calls:    'Who should I call back?',
+        email:    'Anything important in my email notifications?',
+      }[pivot] || 'What in my notifications actually needs me?', null, notifDigest(pivot));
       if (a === 'clear') {
         const keys = notifItems(pivot).filter(i => i.kind === 'notif').map(i => i.n.key);
         await Promise.all(keys.map(key => send('/api/notifications', { key }, 'DELETE')));

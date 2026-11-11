@@ -726,9 +726,9 @@ Start: introduce yourself in one sentence, then ask for their name."""
             "newest first — last message, channel (SMS, MMS, RCS/Messages, WhatsApp, Signal…, Call), unread count, " +
             "missed calls, and whether they're waiting on a reply. With contact: the full back-and-forth with that " +
             "person across all channels, with dates. Use for: who texted/called me, what did X say, did I reply, " +
-            "catch me up.",
+            "catch me up. Whenever the user names a person, pass contact so you get only that conversation.",
             mapOf(
-                "contact"     to mapOf("type" to "string",  "description" to "Person's name or number (optional) — returns their timeline"),
+                "contact"     to mapOf("type" to "string",  "description" to "Person's name or number. Set it whenever a person is named; returns only their timeline"),
                 "days"        to mapOf("type" to "integer", "description" to "How far back (default 7 for overview, 60 for a contact)"),
                 "limit"       to mapOf("type" to "integer", "description" to "Max people (overview) or events (contact)"),
                 "unread_only" to mapOf("type" to "boolean", "description" to "Overview only: just unread / waiting-on-you threads")
@@ -1062,8 +1062,9 @@ Start: introduce yourself in one sentence, then ask for their name."""
                 "limit"  to mapOf("type" to "integer", "description" to "Max results to return (default 8)")
             ), listOf("query")),
         ToolDef("get_pending_attention",
-            "Get a prioritised summary of items that need attention right now: unread messages, recent notifications, " +
-            "upcoming calendar events, and high-priority tasks. Use this at the start of agent mode to understand what's pressing.",
+            "Get a prioritised summary of everything that needs attention right now: unread messages, recent notifications, " +
+            "upcoming calendar events, and high-priority tasks. For agent-mode check-ins and 'what needs my attention?' only; " +
+            "not for questions about a specific person, conversation or app.",
             mapOf(
                 "limit" to mapOf("type" to "integer", "description" to "Max items to return (default 8)")
             ), emptyList()),
@@ -1200,10 +1201,9 @@ Start: introduce yourself in one sentence, then ask for their name."""
             ), listOf("contact")),
 
         ToolDef("inbox_recap",
-            "Fresh read of your inbox: recent SMS threads grouped by contact (with message previews), missed calls, " +
-            "and important notifications — all in one call. Call this when the user asks about messages, inbox, " +
-            "what they missed, wants to catch up, or asks for a daily recap. Always prefer this over reading the " +
-            "device snapshot for message questions.",
+            "Broad inbox sweep across EVERYONE: recent SMS threads, missed calls and other app notifications in one call. " +
+            "Only for open-ended requests that name no person or app, like 'what did I miss today?' or a daily recap. " +
+            "If the user names a person, do NOT use this; use get_conversations(contact=...) instead.",
             mapOf("hours" to mapOf("type" to "integer", "description" to "How many hours back to look (default 24)")),
             emptyList())
     )
@@ -2024,10 +2024,11 @@ Start: introduce yourself in one sentence, then ask for their name."""
                 systemPromptSuffix = """
 ## Active skill: Communication
 Focus on the user's communication needs.
+- **A person is named → that person only.** Call get_conversations(contact="name") and answer about that conversation alone. Do not mention other people, other apps, emails or notifications.
 - **Who's been in touch / messages / calls:** get_conversations — one live view across SMS, MMS, RCS, chat apps and calls, newest first.
 - **Specific person:** get_conversations(contact="name") — full back-and-forth with dates, both directions.
 - **What needs a reply:** get_conversations(unread_only=true).
-- **Full catch-up (messages + missed calls + other notifications):** inbox_recap.
+- **Full catch-up across everyone (no person named):** inbox_recap.
 - Always state how recent things are (e.g. "2h ago", "Tuesday"). If the newest item is days old, say so rather than presenting it as new.
 - RCS/WhatsApp/Signal history only exists from when VoiceOS had notification access; the tool output says from when. Mention this if the user expects a conversation that isn't there.
 - For outgoing messages: draft_email for email, send_sms for SMS, send_whatsapp for WhatsApp — all queue for approval.
@@ -4388,9 +4389,16 @@ You are a personal relationship manager. When reviewing people or follow-ups, AL
 - Never open with "I'm VoiceOS" or self-introductions after the first message. Never end with "How can I help?" unless nothing was asked.
 - When you take an action, say what you did in one line. Don't explain how you did it.
 
+## Stay on the question
+- Answer exactly what was asked, and nothing else. If the user asks about one person, conversation, app or event, talk only about that.
+- Tool results and context often contain far more than the question needs (other conversations, emails, notifications, weather, other apps). Use only the parts that answer the question; never summarise a tool's whole output.
+- Pick the narrowest tool that answers the question. Use broad sweeps (inbox_recap, get_pending_attention, morning_briefing) only when the user asks for a broad overview.
+- If the user's message includes the material to work from (e.g. a conversation transcript), answer from it directly; only call a tool if something you need is missing.
+- Default to short: a few sentences, or a short list. No extra sections the user didn't ask for.
+
 ## Capabilities
 - Device: notifications, SMS, call log, calendar, contacts, apps, tasks, battery, screen automation.
-- Context index: use context_search / get_pending_attention / get_message_threads FIRST for questions about people, messages, or upcoming events.
+- Context index: context_search finds what was said about a specific thing; get_pending_attention is for "what needs my attention?" overviews.
 - Social layer: get_contact_profile, add_relationship_note, log_interaction, get_relationship_health, suggest_social_outreach.
 - Shell (if Termux): run_shell for git, scripts, files. Read-only runs immediately; mutations queue for approval.
 - Screen: get_screen_text (fast) or take_screenshot (vision + coordinates) → tap_screen / swipe_screen.

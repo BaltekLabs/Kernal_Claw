@@ -81,3 +81,54 @@ export function notifItems(pivot) {
   else items = ns.filter(i => i.type === pivot);
   return items.sort((a, b) => b.time - a.time);
 }
+
+// ── Material for scoped agent questions ─────────────────────────
+// Sending the agent exactly what's on screen keeps its answer on that, instead
+// of it fetching (and then narrating) the whole inbox.
+
+const when = ms => new Date(ms).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+const callWhat = e => (e.dir === 'missed' ? 'missed call' : e.dir === 'in' ? 'incoming call' : 'outgoing call');
+
+/** One person's recent messages (and calls), oldest first. */
+export function transcript(person, events, { notes = [], limit = 25 } = {}) {
+  const lines = events.slice(0, limit).reverse().map(e => {
+    const who = e.dir === 'out' ? 'me' : (e.group && e.person ? e.person : person);
+    return e.channel === 'Call'
+      ? `- ${when(e.time)} · ${callWhat(e)}`
+      : `- ${when(e.time)} · ${who} (${e.channel}): ${String(e.text || '').replace(/\s+/g, ' ').slice(0, 300)}`;
+  });
+  const noteLines = notes.slice(-5).map(n => `- ${n.ts ? n.ts + ': ' : ''}${n.text}`);
+  return [
+    `My recent conversation with ${person} (oldest first):`,
+    lines.length ? lines.join('\n') : '- (nothing in the last week)',
+    noteLines.length ? `\nMy notes about ${person}:\n${noteLines.join('\n')}` : '',
+    `\nAnswer only about ${person}, from the above, in 2-4 sentences: what's the latest, and do I need to reply? ` +
+    'If I do, suggest a short reply. Do not mention any other people, messages, notifications or apps.',
+  ].filter(Boolean).join('\n');
+}
+
+/** Threads where the last word was theirs: who is waiting on me. */
+export function waitingDigest(limit = 15) {
+  const waiting = threads().filter(t => t.last.dir !== 'out').slice(0, limit);
+  const lines = waiting.map(t =>
+    `- ${t.person} (${t.last.channel}, ${when(t.last.time)}): ${String(t.last.text || '').replace(/\s+/g, ' ').slice(0, 160)}`);
+  return [
+    'Conversations where the last message was from them (newest first):',
+    lines.length ? lines.join('\n') : '- (none)',
+    '\nUsing only this list: one short line per person saying what they need from me. Skip anyone who clearly needs nothing. ' +
+    'Do not mention notifications, email or other apps.',
+  ].join('\n');
+}
+
+/** A notifications tab's items, for "summarize". */
+export function notifDigest(pivot, limit = 25) {
+  const lines = notifItems(pivot).slice(0, limit).map(i => i.kind === 'call'
+    ? `- ${when(i.c.time)} · ${callWhat(i.c)} · ${i.c.person}`
+    : `- ${when(i.n.time)} · ${i.n.app}: ${[i.n.title, i.n.text].filter(Boolean).join(' - ').replace(/\s+/g, ' ').slice(0, 200)}`);
+  const what = pivot === 'all' ? 'notifications' : `${pivot} notifications`;
+  return [
+    `My current ${what} (newest first):`,
+    lines.length ? lines.join('\n') : '- (none)',
+    `\nUsing only this list, answer briefly. Group or skip routine items; call out only what actually needs me.`,
+  ].join('\n');
+}

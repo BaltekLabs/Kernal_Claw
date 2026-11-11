@@ -35,7 +35,12 @@ function setState(s) { store.agent.state = s; emit('agent'); }
 function persist() { save('mosaic-convo', convo.slice(-40)); }
 
 // ── Asking ──────────────────────────────────────────────────────
-export function ask(text, tileId = null) {
+/**
+ * Ask the agent. `context` is material for the model only (a conversation, a
+ * list of notifications…): it rides along with the question so the agent answers
+ * from exactly that, instead of fetching everything. The bubble shows `text`.
+ */
+export function ask(text, tileId = null, context = null) {
   text = String(text || '').trim();
   if (!text) return;
   if (busy) { toast('Still working on the last one…'); return; }
@@ -61,7 +66,10 @@ export function ask(text, tileId = null) {
   xhr.onprogress = () => take(false);
   xhr.onload = () => { take(true); done(reply, tileId); };
   xhr.onerror = () => { reply.text += '\n[network error]'; done(reply, tileId); };
-  xhr.send(JSON.stringify({ text, mode: prefs.agentMode ? 'agent' : 'assistant' }));
+  const full = context ? `${text}
+
+${context}` : text;
+  xhr.send(JSON.stringify({ text: full, mode: prefs.agentMode ? 'agent' : 'assistant' }));
 }
 
 function handleLine(reply, line) {
@@ -201,7 +209,7 @@ export function mountAgent(body, bar, initial) {
   };
 
   renderConvo();
-  if (initial?.text) ask(initial.text, initial.tileId);
+  if (initial?.text) ask(initial.text, initial.tileId, initial.context);
   else if (initial?.listen) listen();
   else if (initial?.prefill) { input.value = initial.prefill; input.focus(); }
 }

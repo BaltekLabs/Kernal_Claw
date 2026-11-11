@@ -15,7 +15,7 @@
  */
 import { store, emit, send, refresh, esc, toast, ago, initialsOf } from './store.js';
 import { icon } from './icons.js';
-import { messages, calls } from './inbox.js';
+import { messages, calls, transcript } from './inbox.js';
 
 const TYPES = ['family', 'friend', 'work', 'mentor', 'acquaintance', 'other'];
 const FREQ = { daily: 1, weekly: 7, biweekly: 14, monthly: 30, quarterly: 90 };
@@ -202,6 +202,8 @@ export function createPeoplePanels(api) {
       }
       if (t.closest('[data-mood]')) { const m = t.closest('[data-mood]').dataset.mood; return update(c, { sentiment: c.sentiment?.value === m ? '' : m }); }
       if (t.closest('[data-untag]')) { const x = t.closest('[data-untag]').dataset.untag; return update(c, { tags: (c.tags || []).filter(y => y !== x) }); }
+      if (t.closest('[data-a="catchup"]'))   // send the real history + notes, not just a name
+        return ctx.ask(`Catch me up on ${c.name}`, null, transcript(c.name, history(c), { notes: c.notes || [] }));
       if (t.closest('[data-bot]')) return ctx.ask(t.closest('[data-bot]').dataset.bot);
       switch (a) {
         case 'call':   return c.phone ? send('/api/call', { number: c.phone }) : ctx.ask(`Call ${c.name}`);
@@ -236,7 +238,6 @@ export function createPeoplePanels(api) {
       `<button data-a="${a}" class="${on ? 'on' : ''}"><i class="ab-ico">${icon(ic)}</i><span>${label}</span></button>`;
     const bots = [
       `Draft a message to ${c.name} to catch up`,
-      `Catch me up on ${c.name}: our recent messages, calls and notes`,
       `Suggest something to do with ${first} soon`,
       `Remind me to follow up with ${first} next week`,
     ];
@@ -254,7 +255,8 @@ export function createPeoplePanels(api) {
       </div>
 
       <div class="sec">ask mosaic to</div>
-      <div class="suggest">${bots.map(t => `<button data-bot="${esc(t)}">${esc(t.replace(c.name, first))}</button>`).join('')}</div>
+      <div class="suggest"><button data-a="catchup">Catch me up on ${esc(first)}</button>
+        ${bots.map(t => `<button data-bot="${esc(t)}">${esc(t.replace(c.name, first))}</button>`).join('')}</div>
 
       <div class="sec">relationship</div>
       <div class="pills">${TYPES.map(t => pill(t, `data-type="${t}"`, c.type === t)).join('')}</div>
@@ -289,7 +291,7 @@ export function createPeoplePanels(api) {
 
   function historyHtml(c) {
     const h = history(c);
-    const ask = `<button class="btn accent" data-bot="${esc(`Catch me up on my conversation with ${c.name}. Is there anything I need to reply to?`)}">catch me up</button>`;
+    const ask = `<button class="btn accent" data-a="catchup">catch me up</button>`;
     if (!h.length) return `<div class="note">No messages or calls with ${esc(c.name)} this week.</div>${ask}`;
     return ask + h.map(e => {
       const isCall = e.channel === 'Call';
